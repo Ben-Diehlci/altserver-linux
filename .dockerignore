@@ -3,5 +3,7 @@ build/
 *.o
 .DS_Store
 ._*
+__pycache__/
+*.pyc
 REVIVAL.md
 BOOTSTRAP.md

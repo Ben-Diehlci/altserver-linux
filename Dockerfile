@@ -47,7 +47,14 @@ RUN set -eux; \
         libavahi-compat-libdnssd-dev \
         ca-certificates \
         curl \
-        tzdata; \
+        tzdata \
+        \
+        # Needed by the setup web UI, which shells out to these for its health checks. Without
+        # them the pairing and mDNS panels report "unknown" from inside the container -- which is
+        # honest but useless, and those two are the checks people actually need.
+        libimobiledevice-utils \
+        avahi-utils \
+        procps; \
     rm -rf /var/lib/apt/lists/*; \
     # Fail the BUILD rather than ship an image that cannot advertise. This is the exact call
     # dnssd_loader.cpp makes, so if it works here it works at runtime.
