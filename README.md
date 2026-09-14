@@ -1,6 +1,40 @@
 # AltServer-Linux
 AltServer for AltStore, but on-device
 
+> **This fork** ([`bd/revival`](../../tree/bd/revival)) revives a project whose last real code
+> commit predates 2025. CI is working again, several long-standing bugs are fixed, and the goal is
+> running unattended on a Linux home server so apps keep refreshing without a Mac or PC powered on.
+>
+> - **[BOOTSTRAP.md](BOOTSTRAP.md)** — first-time setup, start to finish
+> - **[REVIVAL.md](REVIVAL.md)** — what changed, why, and what is still broken
+> - **[deploy/](deploy/)** — Portainer/compose stacks
+>
+> Notable fixes here: Apple's 2026 GSA client-info block (confirmed in both directions against
+> live Apple infrastructure), the iOS 26 launch-crash signing bug (#131), corecrypto builds again
+> (#111), anisette failures now say what actually went wrong, and mDNS advertisement failure is no
+> longer silent.
+
+## Quick start (Docker / Portainer)
+
+```bash
+# 1. host prerequisites -- only needed if NOT using the container, which bundles them
+sudo apt install -y usbmuxd libimobiledevice-utils avahi-daemon libavahi-compat-libdnssd-dev
+
+# 2. deploy both services
+#    Portainer: Stacks -> Add stack -> Repository, compose path deploy/altserver-stack.yml
+```
+
+`libavahi-compat-libdnssd-**dev**`, not `-libdnssd1`: the code dlopens the *unversioned*
+`libdns_sd.so`, whose symlink only the `-dev` package provides. Without it the server runs,
+reports nothing wrong, and is permanently undiscoverable by your phone.
+
+There is also a status dashboard that checks anisette, the clock, pairing, mDNS publication and
+the process, since none of those report their own failures:
+
+```bash
+python3 web/server.py --host 0.0.0.0 --port 8099
+```
+
 ## Usage
 
 - Install IPA: `./AltServer -u [UDID] -a [AppleID account] -p [AppleID password] [ipaPath.ipa]`
@@ -22,6 +56,22 @@ The following environment var can be set for some special situation:
           anisette identity can get Apple IDs locked.
   - ALTSERVER_NO_SUBSCRIBE: (*unused*) Please enable this for usbmuxd server that do not correctly usbmuxd_listen interfaces
 ```
+
+## Runtime requirements
+
+Beyond the binary itself, on the machine that runs it:
+
+| Requirement | Why | If missing |
+|---|---|---|
+| `python3` | The binary is `-static` and cannot dlopen Bonjour, so it shells out to python3 | Advertisement fails |
+| `libavahi-compat-libdnssd-dev` | Provides the **unversioned** `libdns_sd.so` the code dlopens | Advertisement fails |
+| `avahi-daemon` running | Does the actual mDNS publishing | Advertisement fails |
+| `usbmuxd` (or `netmuxd` for Wi-Fi) | Device access | No device found |
+| An anisette server | Apple machine identity | Sign-in fails |
+| Accurate clock **on the anisette host** | Its timestamp is forwarded to Apple verbatim | Opaque `-36607` |
+
+The first three used to fail *silently*; they now report themselves. The container image bundles
+all of them and verifies `libdns_sd.so` loads at build time.
 
 ## Download
 
@@ -46,13 +96,23 @@ The following environment var can be set for some special situation:
 
 - Install dependencies (see notes below): corecrypto_static, cpprestsdk static lib, boost static lib
 
-- Build:
+- Build (note the `cd build` — the Makefile builds into the *current* directory):
   ```
   cd AltServer-Linux
   mkdir build
+  cd build
   make -f ../Makefile -j3
   ls AltServer-*
   ```
+
+  Easier: use the same prebuilt toolchain CI uses, which already has corecrypto, cpprestsdk,
+  boost and libzip:
+  ```
+  docker run --rm -v "$PWD":/workdir -w /workdir \
+    ghcr.io/nyamisty/altserver_builder_alpine_amd64 \
+    bash -c 'mkdir -p build; cd build; make -f ../Makefile -j"$(nproc)"'
+  ```
+  Or just build the image: `docker build -t altserver .`
 
 - My own build note for you 
   ```
@@ -61,8 +121,14 @@ The following environment var can be set for some special situation:
     2. Install dependencies:
         apk add zsh git curl wget g++ clang boost-static ninja boost-dev cmake make sudo bash vim libressl-dev util-linux-dev zlib-dev zlib-static
     3. Install corecrypto
-        download corecrypto from apple website, unzip corecrypto.zip; cd corecrypto; mkdir build; cd build; CC=clang CXX=clang++ cmake ..;
-        vim CMakeFiles/Makefile2, delete line starts with "all: corecrypto_perf/....." and "all: corecrypto_test/.....", then make; make install
+        See buildenv/Dockerfile, which does this correctly and is verified to work. Apple's
+        current distribution needs three fixes the old notes here did not mention:
+          a) the archive now extracts to corecrypto-2024/, not corecrypto/
+          b) CMakeLists.txt include()s scripts/code-coverage.cmake, which Apple does not ship
+          c) CoreCryptoSources.cmake still points at corecrypto_static/ccrng_static.c, but that
+             file moved to the tree root
+        Symptom of (c) is a confusing "No SOURCES given to target: corecrypto_static"; the real
+        error is the "Cannot find source file" line above it.
     4. Install cpprestsdk
         git clone --recursive https://github.com/microsoft/cpprestsdk; cd cpprestsdk; mkdir build; cmake -DBUILD_SHARED_LIBS=0 ..; make; make install
 	    (if you're compiling for armv7, you have to grep -Wcast-align, and remove it, or the compiling would fail)
@@ -71,7 +137,9 @@ The following environment var can be set for some special situation:
     6. Compile AltServer-Linux
         git clone --recursive https://github.com/NyaMisty/AltServer-Linux
         cd AltServer-Linux
+        mkdir build; cd build
         make -f ../Makefile -j3
-	    (if you're compiling for ARM, i.e. armv7 or aarch64, you'll have to remove the -mno-default flag in Makefile)
+	    (the old note about removing -mno-default for ARM is STALE: the Makefile already
+	     guards that flag to i386/i686, so ARM builds work unmodified)
 
   ```
