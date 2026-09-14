@@ -1,0 +1,106 @@
+# AltServer-Linux + anisette — the whole thing as one Portainer stack.
+#
+# Portainer: Stacks -> Add stack -> Repository, point it at this repo and set the compose path to
+# deploy/altserver-stack.yml. Or paste this into the Web editor.
+#
+# LAN-ONLY BY DESIGN. Sideloading never leaves the local network. Do NOT put either service behind
+# Nginx Proxy Manager and do NOT give them a Cloudflare Tunnel route.
+#
+# ----------------------------------------------------------------------------------------------
+# ONE-TIME PREP ON THE HOST, before deploying:
+#
+#   sudo mkdir -p /opt/stacks/anisette/config /opt/stacks/altserver/data
+#   sudo chown 1000:1000 /opt/stacks/anisette/config     # anisette runs as uid 1000
+#   sudo chmod 700 /opt/stacks/anisette/config
+#
+# The phone must also have been paired over USB once (see BOOTSTRAP.md Phase 3) so that
+# /var/lib/lockdown holds a pairing record. Wireless pairing is not possible in this build.
+# ----------------------------------------------------------------------------------------------
+
+services:
+
+  # --------------------------------------------------------------------------------------------
+  # Anisette. Supplies the Apple machine identity. See deploy/anisette-stack.yml for the full
+  # annotated version and the reasoning behind every line here.
+  # --------------------------------------------------------------------------------------------
+  anisette:
+    image: dadoum/anisette-v3-server@sha256:1e20384985d3c49965f444bef39d627768dacc39ea0dca91f2a535edb7591ba3
+    container_name: anisette
+    restart: unless-stopped
+    environment:
+      # MUST stay UTC. The server stamps X-Apple-I-Client-Time from LOCAL time and appends a
+      # literal "Z", so any other TZ sends Apple a timestamp wrong by your offset while claiming
+      # to be UTC. Do not copy TZ from the other stacks on this host.
+      TZ: UTC
+    ports:
+      # Loopback only. AltServer reaches this via the host's loopback because it runs with
+      # network_mode: host below.
+      - "127.0.0.1:6969:6969"
+    volumes:
+      # The machine identity. Mount this DIRECTORY, never its lib/ subdirectory — the upstream
+      # README says lib/, which persists only the Apple .so cache and loses device.json + adi.pb
+      # on every stack update. That is issue #86.
+      - /opt/stacks/anisette/config:/home/Alcoholic/.config/anisette-v3
+
+  # --------------------------------------------------------------------------------------------
+  # AltServer itself.
+  # --------------------------------------------------------------------------------------------
+  altserver:
+    # Published by .github/workflows/build_image.yml. To build from source instead, comment the
+    # image line and uncomment build: — useful if you want a arch other than the published one.
+    image: ghcr.io/ben-diehlci/altserver-linux:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    #   args:
+    #     BUILDER: ghcr.io/nyamisty/altserver_builder_alpine_amd64
+    container_name: altserver
+    restart: unless-stopped
+    depends_on:
+      - anisette
+
+    # REQUIRED. The binary installs no SIGTERM handler (its only signal call is
+    # signal(SIGPIPE, SIG_IGN)), so as PID 1 the kernel discards docker stop's SIGTERM and every
+    # restart costs the full 10s grace period followed by SIGKILL.
+    init: true
+
+    # REQUIRED, and not negotiable: mDNS/Bonjour is link-local and does not cross a Docker bridge.
+    # On a bridge the phone can never discover _altserver._tcp no matter what else is correct.
+    # Note this makes `ports:` meaningless here — AltServer binds an EPHEMERAL port that differs
+    # on every start (ConnectionManager sets sin_port = 0), so no static rule could work anyway.
+    network_mode: host
+
+    environment:
+      # Reaches the anisette service above via the host's loopback.
+      ALTSERVER_ANISETTE_SERVER: http://127.0.0.1:6969
+
+      # Credentials. Prefer putting these in Portainer's stack environment variables rather than
+      # committing them. They are only needed for sign-in; see BOOTSTRAP.md.
+      # Passing them here beats -p on a command line, which exposes the password in `ps`.
+      ALTSERVER_UDID: "${ALTSERVER_UDID:-}"
+      ALTSERVER_APPLE_ID: "${ALTSERVER_APPLE_ID:-}"
+      ALTSERVER_APPLE_PASSWORD: "${ALTSERVER_APPLE_PASSWORD:-}"
+
+    volumes:
+      # AltServerData. The app writes to the RELATIVE path ./AltServerData against its working
+      # directory, which the image sets to /data — so this mount is what makes it persist.
+      - /opt/stacks/altserver/data:/data
+
+      # The pairing record from the one-time USB pairing. Read-write: libimobiledevice may
+      # refresh it. Losing this means fetching the cable again.
+      - /var/lib/lockdown:/var/lib/lockdown
+
+      # Device access. usbmuxd (or netmuxd) owns this socket on the host.
+      - /var/run/usbmuxd:/var/run/usbmuxd
+
+      # mDNS. The image ships python3 + libavahi-compat-libdnssd-dev, but the actual publishing is
+      # done by the HOST's avahi-daemon, reached over these sockets. Without them the server runs,
+      # reports success, and is silently undiscoverable.
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
+      - /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket
+
+    # No IPA argument => daemon mode. The first-time install is a separate one-off run; see
+    # BOOTSTRAP.md Phase 4. You can do it from Portainer's container console:
+    #   AltServer -u "$ALTSERVER_UDID" -a "$ALTSERVER_APPLE_ID" -p "$ALTSERVER_APPLE_PASSWORD" /data/AltStore.ipa
+    # It needs an interactive console because the 2FA code is read from stdin.
+    command: []
