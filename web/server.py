@@ -30,7 +30,7 @@ import argparse
 import json
 import os
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import status_checks  # noqa: E402
@@ -205,7 +205,8 @@ INSTALL_PAGE = PAGE[:PAGE.index("<body>")].replace(
     <label>Apple ID<br><input name="apple_id" type="email" style="width:100%;padding:.45rem;margin:.3rem 0 .7rem" required></label>
     <label>Password<br><input name="password" type="password" style="width:100%;padding:.45rem;margin:.3rem 0 .7rem" required></label>
     <button type="submit" style="padding:.5rem 1rem;font-weight:600">Install AltStore</button>
-    <span id="msg" class="meta"></span>
+    <div id="msg" style="display:none;margin-top:.7rem;padding:.55rem .7rem;border-radius:7px;
+         background:var(--failbg);color:var(--fail);font-weight:600"></div>
   </form>
 
   <form id="tfa" class="card" style="display:none" onsubmit="return sendCode(event)">
@@ -227,18 +228,27 @@ INSTALL_PAGE = PAGE[:PAGE.index("<body>")].replace(
 <script>
 function esc(s){ return String(s).replace(/[&<>\"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c])); }
+function showMsg(t){
+  const el = document.getElementById('msg');
+  el.textContent = t || '';
+  el.style.display = t ? '' : 'none';
+}
 async function post(url, body){
-  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
-                             body: JSON.stringify(body)});
-  return r.json();
+  try {
+    const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                               body: JSON.stringify(body)});
+    return await r.json();
+  } catch (e) {
+    return {ok:false, error:'Could not reach the server: ' + e};
+  }
 }
 async function start(e){
   e.preventDefault();
-  document.getElementById('msg').textContent = 'starting\u2026';
+  showMsg('');
   const f = e.target;
   const d = await post('/api/install/start', {
     udid: f.udid.value, apple_id: f.apple_id.value, password: f.password.value});
-  document.getElementById('msg').textContent = d.ok ? '' : d.error;
+  showMsg(d.ok ? '' : (d.error || 'Could not start the install.'));
   f.password.value = '';
   return false;
 }
@@ -260,7 +270,7 @@ async function poll(){
     const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
     log.textContent = d.lines.join('\n');
     if (atBottom) log.scrollTop = log.scrollHeight;
-    if (d.error) document.getElementById('msg').textContent = d.error;
+    if (d.error) showMsg(d.error);
   }catch(e){}
 }
 poll(); setInterval(poll, 1500);
@@ -344,7 +354,11 @@ def main():
     args = ap.parse_args()
 
     print("AltServer status dashboard on http://%s:%d" % (args.host, args.port), flush=True)
-    HTTPServer((args.host, args.port), Handler).serve_forever()
+    # THREADING IS REQUIRED, not an optimisation. The status checks shell out to avahi-browse,
+    # idevicepair and curl, which take seconds; a single-threaded server would block every other
+    # request behind them. Three pages polling at 30s, 5s and 1.5s would then queue against each
+    # other, which looks like the UI freezing when you switch pages.
+    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 
 if __name__ == "__main__":

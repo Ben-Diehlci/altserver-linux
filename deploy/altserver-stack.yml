@@ -163,8 +163,10 @@ services:
     volumes:
       # Shares altserver's data volume so the install flow can see the fetched AltStore.ipa.
       - altserver-data:/data
-      # Read-only: the UI only reports on pairing, it does not change it.
-      - /var/lib/lockdown:/var/lib/lockdown:ro
+      # Read-WRITE. The status and pairing pages only read, but the install flow runs a real
+      # AltServer install from this container, and libimobiledevice may refresh the pairing
+      # record during device work. Read-only here fails in a way that looks like a device fault.
+      - /var/lib/lockdown:/var/lib/lockdown
       - /var/run/usbmuxd:/var/run/usbmuxd
       - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
       - /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket
