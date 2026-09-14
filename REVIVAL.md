@@ -351,6 +351,143 @@ ldd (Debian GLIBC 2.41-12+deb13u3) 2.41
 netmuxd v0.4.2 - a network multiplexer          <- v0.4.3 tag, unbumped version string. Cosmetic.
 ```
 
+### CONFIRMED 2026-09-14: netmuxd v0.4.3 is INCOMPATIBLE with our pinned libimobiledevice
+
+Verified in both trees, not inferred. netmuxd v0.4.3 `src/devices.rs:45` picks its address layout:
+
+```rust
+let bsd_sockaddr = cfg!(any(target_os = "macos", target_os = "ios", target_os = "freebsd", ...));
+IpAddr::V4(ip) => { if bsd_sockaddr { data[0]=0x10; data[1]=0x02; }   // sa_len, AF_INET
+                    else            { data[0]=0x02; data[1]=0x00; } } // Linux: family as u16 LE
+```
+
+On Linux it writes a **native** sockaddr. Our vendored libimobiledevice is pinned at
+`c6f89dea` (2021-12-09) and expects the **BSD/Apple** layout:
+
+* `libraries/libimobiledevice/src/idevice.c:287` -- `addrlen = conn_data[0]`, i.e. byte 0 is a
+  BSD `sa_len`. With `0x02` there it mallocs **2 bytes** and truncates the address.
+* `idevice.c:483` -- tests `conn_data[1]` against `0x02` / `0x1E`. `0x1E` is 30 = `AF_INET6`
+  **on BSD**; Linux uses 10. The code's own comment says `(bsd)` and carries a
+  `FIXME: Improve handling of this platform/host dependent connection data`.
+* With `conn_data[1] == 0x00` it falls through to `idevice.c:497` -> `IDEVICE_E_UNKNOWN_ERROR`.
+
+Upstream fixed this in `a172604e5af` and `806ab8d37cf` (both 2023-06). Neither is an ancestor of
+our pin (`git merge-base --is-ancestor` returns false for both).
+
+**The failure shape is the worst available.** `libraries/libusbmuxd/src/libusbmuxd.c:309` rejects a
+network device only when `conn_data[0]` is ZERO -- `0x02` passes -- so **the device enumerates
+normally**. `idevice_new_with_options` succeeds and `DeviceNotFound` is never raised; the failure
+lands one line later at `DeviceManager.cpp:763-765` as `ServerErrorCode::ConnectionFailed`.
+
+netmuxd **v0.1.4** wrote `data[0]=10; data[1]=0x02` unconditionally, which this parser accepts.
+So the old README note ("netmuxd >= 0.3") was wrong for THIS build, in the opposite direction from
+what we assumed.
+
+Two fixes, MUTUALLY EXCLUSIVE -- a bumped libimobiledevice rejects v0.1.4's layout and vice versa:
+
+1. Bump `libraries/libimobiledevice` past `806ab8d37cf` (plus libusbmuxd / libimobiledevice-glue,
+   and re-derive `makefiles/libimobiledevice-build/config.h`). Keeps v0.4.3 and its iOS 26.4+ TXT
+   matching. Substantial.
+2. Patch the vendored parser to accept both layouts -- must fix BOTH sites, since `addrlen` at
+   :287 truncates before :483 is ever reached. Surgical.
+
+Pinning netmuxd to v0.1.4 is a DIAGNOSTIC ONLY: it predates the heartbeat, the async pair-record
+cache, and iOS 26.4+ TXT matching, on an iOS 26 phone.
+
+### CONFIRMED 2026-09-14: the status page CANNOT detect the bug above -- it reports green
+
+`web/status_checks.py` shells out to `idevice_id` / `idevicepair`, which are **Debian's**
+libimobiledevice-utils. `Dockerfile` now uses `debian:trixie-slim` (forced by netmuxd's glibc 2.38
+requirement), and trixie ships a **post-2023-fix** libimobiledevice that parses v0.4.3's Linux
+sockaddr correctly. AltServer links the **vendored 2021** copy.
+
+So `docker exec altserver idevice_id -l` prints the UDID and `idevicepair validate` passes, while
+every AltServer refresh fails. **A green wireless check is not evidence the refresh path works.**
+This was handed to the user as "the whole ballgame" -- it was a test that could not fail. Same
+class as the anisette check that compared four fields against empty files.
+
+The zero-risk way to actually test it, no phone interaction and no rebuild: run the same query
+under a PRE-fix libimobiledevice (bookworm) and a POST-fix one (trixie) against the live socket.
+
+```bash
+docker run --rm -v <stack>_muxd-socket:/run/muxd -e USBMUXD_SOCKET_ADDRESS=UNIX:/run/muxd/usbmuxd \
+  debian:bookworm-slim sh -c 'apt-get -qq update && apt-get -qq install -y libimobiledevice-utils \
+  >/dev/null && dpkg -l | grep libimobiledevice && idevice_id -n && ideviceinfo -n -k ProductVersion'
+```
+
+bookworm failing where trixie succeeds confirms it end to end. bookworm SUCCEEDING puts the whole
+diagnosis in doubt and the rebuild should not start.
+
+### CONFIRMED 2026-09-14: the real ceiling on unattended refresh is iOS, not the server
+
+**AltStore registers no `BGTaskScheduler` task anywhere** (grep over `AltStore/`, `AltStoreCore/`,
+`AltWidget/`, `Shared/` finds nothing). Its only unattended wake is the **deprecated**
+background-fetch API: `AppDelegate.swift:272` calls `setMinimumBackgroundFetchInterval(1*60*60)`
+via a shim in `Types/DeprecatedAPIs.swift:19-22`, entered at
+`application(_:performFetchWithCompletionHandler:)` (`AppDelegate.swift:297`). The push path is
+compiled out of release builds -- `registerForRemoteNotifications()` sits inside `#if DEBUG` at
+`AppDelegate.swift:277-279`.
+
+iOS schedules legacy background fetch **opportunistically from usage heuristics**, and AltStore's
+own UI admits it: *"The more you open AltStore, the more chances it's given to refresh apps in the
+background"* (`AppDelegate.swift:306`).
+
+So the goal is achievable without a Mac or PC, but **not with a phone nobody touches**. Every
+server-side fix can be perfect and apps still expire.
+
+**The deterministic fix is on the phone**: a Shortcuts Personal Automation on a daily time trigger
+running the "Refresh All Apps" App Shortcut, exposed with no setup at
+`Intents/App Intents/AppShortcuts.swift:16-25`. It is strictly better than background fetch here
+because it sets `ignoresServerNotFoundError = false` (`RefreshAllAppsIntent.swift:187`) so a
+discovery failure SURFACES, where background fetch sets it true and goes silent
+(`BackgroundRefreshAppsOperation.swift:60`). Caveat to test on hardware: the intent is
+iOS 17+, is a `ForegroundContinuableIntent`, and has a ~27s budget
+(`RefreshAllAppsIntent.swift:97`) after which it requests foreground continuation.
+
+**Cheapest triage in the whole project, and it needs no server access**: on the phone,
+**AltStore -> Settings -> Refresh Attempts**. Rows are written for every attempt that reached
+`finish()`, independent of notifications (`BackgroundRefreshAppsOperation.swift:270-274`). Empty or
+sparse => iOS is not waking AltStore. "AltServer could not be found" => discovery. A connection
+error => the sockaddr bug above. Two-factor => the 2FA blocker.
+
+### CORRECTION 2026-09-14: the Apple ID password advice was incomplete
+
+This log previously recorded "change the Apple ID password" as an outstanding action, after live
+year-long bearer tokens appeared in pasted install logs. The security reason stands, but the
+operational consequence was never stated and it is severe:
+
+`AuthenticationOperation.swift:362-364` -- on `incorrectCredentials` or
+`appSpecificPasswordRequired` AltStore calls `authenticate()`, which needs to present a view
+controller. In a background refresh there is none, so it returns
+`OperationError.notAuthenticated`. **A password change permanently kills unattended refresh until
+a human opens AltStore and re-enters credentials**, with no notification, because it arrives during
+a background refresh.
+
+There is also a split-brain hazard: the phone keeps its own copy in its keychain
+(`AltStoreCore/Components/Keychain.swift:70-71`) while the server has
+`ALTSERVER_APPLE_PASSWORD` in the stack env. Updating only the stack leaves a server that can still
+install and a phone that can no longer refresh.
+
+**Operational rule: if the password is rotated, re-enter it in AltStore ON THE PHONE in the same
+sitting -- not just in Portainer.** Do not enable app-specific-password enforcement on this account.
+
+### CONFIRMED 2026-09-14: a cable would remove six layers from the critical path
+
+`FindServerOperation.swift:74-80` prefers a USB-connected AltServer over any wireless one, checked
+before the `isPreferred` branch at :81, and the wired lookup uses `IDEVICE_LOOKUP_USBMUX` alone
+(`DeviceManager.cpp:1510`, `:1626`). A permanently attached cable therefore removes netmuxd, the
+sockaddr bug, mDNS, avahi, D-Bus and AppArmor from the refresh path in one move -- and keeps
+usbmuxd running, which also removes the `/var/run/usbmuxd` bind-mount hazard. Worth deciding BEFORE
+committing to a substantial libimobiledevice bump. The server is a VM, so this needs USB passthrough.
+
+### RISK 2026-09-14: re-running the one-shot install can revoke the live certificate
+
+Upstream gates the revoke behind a modal at `AltServerApp.cpp:885-896`; **that prompt is compiled
+out on Linux**, so the revoke proceeds unattended. The cached p12 early-return at
+`AltServerApp.cpp:858-867` protects only if the file both exists AND loads. Do not re-run the
+install flow casually now that AltStore works, and never run a second signing agent (a Mac/Windows
+AltServer, Sideloadly, Xcode) against this Apple ID -- each side re-revokes the other's certificate.
+
 ### Other things learned the hard way
 
 - **`gsa.apple.com` is served from `Apple Server Authentication CA`**, Apple's own private CA,
