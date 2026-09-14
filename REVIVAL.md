@@ -83,6 +83,7 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | `6cd382a` | **node24 bump**, part 1: checkout v4→v7, setup-qemu v3→v4, login-action v3→v4, gh-release v2→v3. |
 | `8494e36` | **node24 bump**, part 2: third-party uploader → `actions/upload-artifact@v7`, download-artifact v4→v8, matrix restructured to carry an `arch` label. |
 | `a266861` | **corecrypto**, 2 of 3 layers. Does *not* close #111. |
+| `5364cd3` | **#131 fixed** via the ldid rewriter: capture the SHA-256 CodeDirectory hash before truncating to 20 bytes. Build-verified; **not** verified on an iOS 26 device. |
 | `654907a` | **mDNS advertisement failure made loud.** Both failure paths verified; success path NOT verified locally — no working avahi in the build container. Must be confirmed on the real host. |
 | `b885501` | **anisette error handling** rewritten; `mktime`→`timegm`; `ResetProvisioning` Windows-path bug. Closes #104. |
 
@@ -275,8 +276,15 @@ breaks the premise soonest, not by how interesting the code is.
   diagnosis in `open_issue_0131.md`. The competing diagnosis in that thread does not hold against
   this tree: DER entitlements *are* emitted, CodeDirectory version *is* 0x00020400, and a SHA-256
   alternate CD *is* present.
-  **Free question that may remove this entirely:** if AltStore is already installed and launching
-  on the phone, the bootstrap is already done and only pairing, anisette and discovery matter.
+  **ANSWERED 2026-09-14: AltStore is NOT installed. Installing it is the whole point.** So the
+  bootstrap path IS required, and #131 is therefore back on the critical path — it is the *first*
+  thing that will bite. The mechanism analysis above still stands (it is not a *refresh* blocker),
+  but you cannot reach refresh without passing through the install it breaks.
+  **FIXED in `makefiles/AltSign-build/rewrite_ldid_source.py`** rather than in the submodule,
+  using the project's existing build-time rewriting mechanism, with a guard that fails the build
+  loudly if upstream ldid.cpp ever stops matching. **UNVERIFIED ON HARDWARE** — the diagnosis is
+  confirmed in source and matches the issue reporter, but nobody has yet confirmed it makes an app
+  launch on a real iOS 26 device.
 
 Items A and C are deployment/config work rather than patches, and both need a real device to
 confirm. B is a small patch. D is a substantial one. None are blocked by anything already done.
@@ -406,10 +414,9 @@ Consequences, and they are exactly the wrong shape for a headless box:
 
 ### Bigger
 
-4. **Fix #131 in place (~2 lines), or bump `upstream_repo` to 1.7.4.** Prefer the two-line fix:
-   move the `alternateCDSHA256 = hash` capture above `hash.resize(20)` in
-   `upstream_repo/ldid/ldid.cpp` (~:2215). Bootstrap-only — see blocker D. The full bump is the
-   heavier alternative (`ldid.cpp`
+4. ~~**Fix #131**~~ — **DONE**, see the Done table. Left here only as a pointer: the heavier
+   alternative, if the rewriter patch ever proves insufficient, is bumping `upstream_repo` to
+   1.7.4 (`ldid.cpp`
    truncates a hash to 20 bytes before it becomes the SHA-256 attribute; CoreTrust rejects it).
    `.gitmodules` pins `branch = develop`, whose tip is from 2022, so `--remote` can never reach
    it. Needs a hand-edit: the new `Signer.cpp:277` passes `app.path() + "\\"` and
