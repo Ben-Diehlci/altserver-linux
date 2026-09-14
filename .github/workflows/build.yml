@@ -9,6 +9,11 @@ on:
         required: false
         type: boolean
         default: false
+      all_arches:
+        description: 'Build every architecture, not just amd64'
+        required: false
+        type: boolean
+        default: false
       debug_enabled:
         description: 'Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)'
         required: false
@@ -70,30 +75,50 @@ jobs:
     outputs:
       updated: ${{ steps.check.outputs.updated }}
 
+  # Decides which architectures to build. amd64 alone for ordinary branch pushes, which is what
+  # day-to-day iteration actually consumes; the full set for tags (the release job needs all four),
+  # for the scheduled upstream-sync run, and on demand via the all_arches input.
+  #
+  # The emulated legs (armv7, aarch64, i386 run under QEMU on x86 runners) take several times
+  # longer than amd64, so paying for them on every push is pure latency for no benefit -- but
+  # dropping them entirely would make this fork useless on a Raspberry Pi, which is much of the
+  # point of AltServer-Linux.
+  matrix_setup:
+    runs-on: ubuntu-latest
+    name: "Select architectures"
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - name: Pick architectures
+        id: pick
+        run: |
+          AMD64='{"arch":"amd64","builder":"ghcr.io/nyamisty/altserver_builder_alpine_amd64"}'
+          AARCH64='{"arch":"aarch64","builder":"ghcr.io/nyamisty/altserver_builder_alpine_aarch64"}'
+          ARMV7='{"arch":"armv7","builder":"ghcr.io/nyamisty/altserver_builder_alpine_armv7"}'
+          I386='{"arch":"i386","builder":"ghcr.io/nyamisty/altserver_builder_alpine_i386"}'
+
+          if [[ "${{ github.ref }}" == refs/tags/* ]] \
+             || [[ "${{ github.event_name }}" == "schedule" ]] \
+             || [[ "${{ inputs.all_arches }}" == "true" ]]; then
+            echo "Building ALL architectures"
+            echo "matrix={\"include\":[$ARMV7,$AARCH64,$AMD64,$I386]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Branch push: building amd64 only. Use the all_arches input, or push a tag, for the full set."
+            echo "matrix={\"include\":[$AMD64]}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
-    needs: [check]
+    needs: [check, matrix_setup]
     strategy:
       # Do not cancel the other legs when one fails: the emulated architectures are the most
       # likely to break, and killing a good amd64 build because armv7 died wastes the useful one.
       fail-fast: false
-      matrix:
-        # `include:`-only matrix: still exactly 4 legs, but each now carries a short `arch`
-        # label. actions/upload-artifact rejects '/' and ':' in artifact names, so the image
-        # reference cannot be used as the name -- hence this label.
-        #
-        # armv7, aarch64 and i386 run under QEMU emulation on x86 runners and take far longer
-        # than amd64. Artifacts are published per-job as each finishes, so a slow leg never
-        # blocks downloading a fast one -- but `release` waits for all four via `needs:`, which
-        # is correct for a tagged release and merely slow for day-to-day iteration.
-        include:
-          - arch: armv7
-            builder: ghcr.io/nyamisty/altserver_builder_alpine_armv7
-          - arch: aarch64
-            builder: ghcr.io/nyamisty/altserver_builder_alpine_aarch64
-          - arch: amd64
-            builder: ghcr.io/nyamisty/altserver_builder_alpine_amd64
-          - arch: i386
-            builder: ghcr.io/nyamisty/altserver_builder_alpine_i386
+      # Computed by matrix_setup above. Each leg carries a short `arch` label because
+      # actions/upload-artifact rejects '/' and ':' in artifact names, so the image reference
+      # cannot be used as the name.
+      matrix: ${{ fromJSON(needs.matrix_setup.outputs.matrix) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
