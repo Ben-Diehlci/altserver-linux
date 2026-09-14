@@ -63,6 +63,39 @@ RUN set -eux; \
 
 COPY --from=build /out/AltServer /usr/local/bin/AltServer
 
+# ---------------------------------------------------------------------------------------------
+# netmuxd. This is what makes WIRELESS refresh possible at all.
+#
+# Stock usbmuxd enumerates USB only -- it has no network-device support whatsoever, so with the
+# cable out AltServer sees no device and every InstallProvisioningProfilesRequest fails. On top of
+# that, Ubuntu's usbmuxd unit is `static` and udev-activated: it starts when a cable is plugged in
+# and EXITS when the last device is removed, so unattended operation has no mux running at all.
+#
+# netmuxd browses _apple-mobdev2._tcp over mDNS, tracks the phone's address, and serves the
+# usbmuxd socket protocol with the device presented as ConnectionType Network. It uses the
+# pure-Rust mdns-sd crate rather than avahi, so it needs host networking for multicast but NOT
+# the D-Bus/avahi sockets AltServer itself requires.
+#
+# Pinned deliberately. "Latest" would let an upstream release change behaviour without a commit
+# here; bumping is a one-line change and CI rebuilds the image.
+# ---------------------------------------------------------------------------------------------
+ARG NETMUXD_VERSION=v0.4.3
+ARG TARGETARCH
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) nm_triple=x86_64-unknown-linux-gnu ;; \
+      arm64) nm_triple=aarch64-unknown-linux-gnu ;; \
+      *) echo "netmuxd publishes no build for TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/netmuxd.tar.gz \
+      "https://github.com/jkcoxson/netmuxd/releases/download/${NETMUXD_VERSION}/netmuxd-${nm_triple}.tar.gz"; \
+    tar -xzf /tmp/netmuxd.tar.gz -C /tmp; \
+    install -m 0755 /tmp/netmuxd /usr/local/bin/netmuxd; \
+    rm -f /tmp/netmuxd.tar.gz /tmp/netmuxd; \
+    # Fail the BUILD rather than ship a binary that cannot run here -- the release is dynamically
+    # linked against glibc, so a runtime-image change could break it silently otherwise.
+    /usr/local/bin/netmuxd --about
+
 # Fetches the current AltStore Classic IPA, resolving the URL from AltStore's own catalogue rather
 # than a hardcoded one -- a pinned URL silently installs an ever-older AltStore.
 # The setup web UI: status dashboard, pairing wizard and the install flow. Run it with

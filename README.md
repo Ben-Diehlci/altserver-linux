@@ -22,7 +22,8 @@ AltServer for AltStore, but on-device.
 | Apple's 2026 GSA client-info block | **Fixed** and confirmed in both directions against live Apple infrastructure |
 | GrandSlam `429` on connection reuse | **Fixed**; proven with a zero-credential probe |
 | corecrypto build (#111) | **Fixed.** The buildenv image is rebuildable from source again |
-| iOS 26 launch crash (#131) | Fixed in code, **not yet confirmed on hardware** |
+| iOS 26 launch crash (#131) | Fixed in code; AltStore **installs and launches** |
+| Wireless refresh | netmuxd ships in the stack; wireless lockdown confirmed reachable on iOS 26 |
 | AltJIT on iOS 17+ | **Not supported.** Needs personalised DDI, TSS signing and a RemoteXPC tunnel. Use [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) |
 
 ---
@@ -107,7 +108,7 @@ Bundled in the container image. Needed on the host if you run the binary directl
 | `python3` | The binary is `-static` and cannot dlopen Bonjour, so it shells out to python3 | Advertisement fails |
 | `libavahi-compat-libdnssd-dev` | Provides the **unversioned** `libdns_sd.so` the code dlopens | Advertisement fails |
 | `avahi-daemon` running | Performs the actual mDNS publishing | Advertisement fails |
-| `usbmuxd`, or `netmuxd` for Wi-Fi | Device access | No device found |
+| `usbmuxd` for cabled pairing; **`netmuxd` for Wi-Fi** | Device access | No device found |
 | An anisette server | Apple machine identity | Sign-in fails |
 | Accurate clock **on the anisette host** | Its timestamp is forwarded to Apple verbatim | Opaque `-36607` |
 
@@ -117,10 +118,37 @@ to end up with a server that runs, reports nothing wrong, and is invisible to yo
 
 ### Wi-Fi refresh
 
-Needs [netmuxd](https://github.com/jkcoxson/netmuxd) (≥ 0.3) **owning `/var/run/usbmuxd`, with
-`usbmuxd` stopped** — stock usbmuxd never reports a device with ConnectionType `Network`, and the
-two collide over that socket. If pointing at TCP instead, the variable is `USBMUXD_SOCKET_ADDRESS`;
-the widely-copied instruction spelling it `USBMUXD_SOCKET_ADRESS` (one D) is silently ignored.
+**Included in the stack** — there is nothing to install. The `netmuxd` service provides it.
+
+This matters more than it sounds. Stock `usbmuxd` enumerates USB and nothing else, so with no cable
+AltServer sees no device and every refresh fails as what looks like a device fault. And on Ubuntu
+the `usbmuxd` unit is `static` and udev-activated — it starts when a cable is plugged in and
+**exits when the last device is unplugged**, so an unattended server has no mux running at all:
+
+```
+$ idevice_id -l
+ERROR: Unable to retrieve device list!     # not "no devices" — nothing was listening
+$ systemctl is-active usbmuxd
+inactive
+```
+
+[netmuxd](https://github.com/jkcoxson/netmuxd) browses `_apple-mobdev2._tcp`, tracks the phone, and
+serves the usbmuxd protocol with the device presented as `ConnectionType: Network`.
+
+It runs on **its own socket path** in a shared volume rather than taking over `/var/run/usbmuxd`.
+The host's usbmuxd is then left completely alone to handle the cable for first-time pairing, and
+nothing contends for anything. AltServer is pointed at netmuxd with `USBMUXD_SOCKET_ADDRESS`
+(note the spelling — the widely-copied `USBMUXD_SOCKET_ADRESS`, one D, is silently ignored).
+
+Requirements on the phone side, both normally already true after the USB pairing:
+
+| Needs to be true | How to check from the server |
+|---|---|
+| Phone advertises itself | `avahi-browse -rt _apple-mobdev2._tcp` shows it |
+| `lockdownd` accepts network connections | port **62078** open on the phone's IP |
+
+Note that 62078 is the port that matters. The port in the mDNS TXT record is a different service
+and refuses connections — which looks alarming and is not.
 
 ---
 

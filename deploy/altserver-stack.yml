@@ -62,6 +62,67 @@ services:
   # --------------------------------------------------------------------------------------------
   # AltServer itself.
   # --------------------------------------------------------------------------------------------
+  # --------------------------------------------------------------------------------------------
+  # netmuxd -- what makes WIRELESS refresh work. Without this, refresh requires a cable, which
+  # defeats the entire point of running AltServer on a home server.
+  #
+  # Stock usbmuxd enumerates USB and nothing else; it has no network-device support at all. Worse,
+  # on Ubuntu the usbmuxd unit is `static` and udev-activated -- it starts when a cable is plugged
+  # in and EXITS when the last device is unplugged. Measured on a healthy setup with no cable:
+  #
+  #     $ idevice_id -l
+  #     ERROR: Unable to retrieve device list!      <- not "no devices": the socket had no listener
+  #     $ systemctl is-active usbmuxd
+  #     inactive
+  #
+  # So an unattended server has NO mux running at all, and AltServer fails every
+  # InstallProvisioningProfilesRequest with what looks like a device fault.
+  #
+  # netmuxd browses _apple-mobdev2._tcp, tracks the phone, and serves the usbmuxd socket protocol
+  # with the device presented as ConnectionType Network.
+  #
+  # WHY ITS OWN SOCKET PATH, not /var/run/usbmuxd: taking over the host socket would mean masking
+  # the host's usbmuxd, and a bind-mounted socket FILE cannot be replaced from inside a container
+  # anyway. Keeping netmuxd on a private path in a named volume means the host's usbmuxd is left
+  # completely alone -- it still handles the cable for first-time pairing -- while AltServer is
+  # pointed at netmuxd via USBMUXD_SOCKET_ADDRESS. Nothing contends for anything.
+  #
+  # The UNIX: prefix is not a guess: upstream_repo/libusbmuxd/src/libusbmuxd.c:160 checks for it
+  # and calls socket_connect_unix() on the remainder.
+  # --------------------------------------------------------------------------------------------
+  netmuxd:
+    image: ghcr.io/ben-diehlci/altserver-linux:latest
+    container_name: netmuxd
+    restart: unless-stopped
+
+    # REQUIRED. mDNS is link-local multicast and does not cross a Docker bridge, so on a bridge
+    # netmuxd would never see the phone. Note it uses the pure-Rust mdns-sd crate rather than
+    # avahi, so unlike altserver it needs NO D-Bus or avahi sockets -- and it coexists with the
+    # host's avahi-daemon on UDP 5353 rather than fighting it.
+    network_mode: host
+
+    init: true
+
+    # Runs netmuxd instead of AltServer; the normal entrypoint fetches an IPA and execs the server.
+    entrypoint: ["/usr/local/bin/netmuxd"]
+    command:
+      - "--socket-path"
+      - "/run/muxd/usbmuxd"
+      # Where the pairing record from the one-time USB pairing lives. netmuxd needs it to identify
+      # and talk to the device it finds over mDNS.
+      - "--plist-storage"
+      - "/var/lib/lockdown"
+      # USB is the host usbmuxd's job -- see above. Serving it here would need /dev/bus/usb and
+      # would duplicate something that already works.
+      - "--disable-usb"
+
+    volumes:
+      # The socket netmuxd creates, shared with altserver. A named volume (a DIRECTORY) rather
+      # than a bind-mounted socket file, because the socket has to be created at startup.
+      - muxd-socket:/run/muxd
+      # Read-only: netmuxd reads the pairing record, it does not maintain it.
+      - /var/lib/lockdown:/var/lib/lockdown:ro
+
   altserver:
     # Published by .github/workflows/build_image.yml. To build from source instead, comment the
     # image line and uncomment build: — useful if you want a arch other than the published one.
@@ -116,6 +177,13 @@ services:
       # Reaches the anisette service above via the host's loopback.
       ALTSERVER_ANISETTE_SERVER: http://127.0.0.1:6969
 
+      # Use netmuxd instead of the host's usbmuxd, so the phone is reachable over Wi-Fi with no
+      # cable attached. Without this AltServer talks to /var/run/usbmuxd, which on an unattended
+      # server is usually not running at all.
+      # NOTE the spelling: libusbmuxd reads USBMUXD_SOCKET_ADDRESS. The widely-copied
+      # USBMUXD_SOCKET_ADRESS (one D) is silently ignored and costs hours.
+      USBMUXD_SOCKET_ADDRESS: UNIX:/run/muxd/usbmuxd
+
       # The entrypoint refreshes /data/AltStore.ipa on every start, resolving the current
       # version from AltStore's own catalogue -- so there is no IPA to download by hand and
       # no hardcoded URL to go stale. Set to 1 to leave the file alone (e.g. to pin a build).
@@ -140,7 +208,11 @@ services:
       # refresh it. Losing this means fetching the cable again.
       - /var/lib/lockdown:/var/lib/lockdown
 
-      # Device access. usbmuxd (or netmuxd) owns this socket on the host.
+      # netmuxd's socket -- the wireless device path. This is the one that matters for refresh.
+      - muxd-socket:/run/muxd
+
+      # The host's usbmuxd, kept as well so a plugged-in cable still works if you ever clear
+      # USBMUXD_SOCKET_ADDRESS. Harmless while that variable is set: libusbmuxd never looks here.
       - /var/run/usbmuxd:/var/run/usbmuxd
 
       # mDNS. The image ships python3 + libavahi-compat-libdnssd-dev, but the actual publishing is
@@ -155,6 +227,10 @@ services:
       # an avahi policy problem (also fine). Symptom: DNSServiceRegister returns -65553 (Refused).
       - /etc/machine-id:/etc/machine-id:ro
       - /var/lib/dbus/machine-id:/var/lib/dbus/machine-id:ro
+
+    depends_on:
+      - anisette
+      - netmuxd
 
     # No IPA argument => daemon mode. The first-time install is a separate one-off run; see
     # BOOTSTRAP.md Phase 4. You can do it from Portainer's container console:
@@ -232,7 +308,11 @@ services:
       # AltServer install from this container, and libimobiledevice may refresh the pairing
       # record during device work. Read-only here fails in a way that looks like a device fault.
       - /var/lib/lockdown:/var/lib/lockdown
+      # BOTH mux sockets, deliberately. The status page checks each separately: the host's usbmuxd
+      # for a cabled device, netmuxd for a wireless one. Reporting them together would hide
+      # exactly the failure that matters -- USB fine, wireless dead.
       - /var/run/usbmuxd:/var/run/usbmuxd
+      - muxd-socket:/run/muxd
       - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
       - /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket
       # Same machine-id requirement as altserver -- avahi-browse needs D-Bus too.
@@ -248,3 +328,6 @@ volumes:
   # since it holds the Apple machine identity. Losing it means re-provisioning and a fresh 2FA.
   anisette-config:
   altserver-data:
+  # Holds only netmuxd's unix socket. Nothing persistent -- it exists so two containers can share
+  # a directory that netmuxd is able to create a socket in.
+  muxd-socket:

@@ -110,6 +110,7 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | `b98a01e` | **`paths:` filter fixed** — `web/**` changes were not rebuilding the image, so five commits of fixes never shipped. |
 | `bb4713d` | REVIVAL.md: both findings written up. |
 | *(this)* | **Two CI guards added** (`tests/`), each verified to fail by reintroducing the original bug. |
+| *(this)* | **netmuxd added to the image and the stack** — wireless device transport, the last missing piece for unattended refresh. |
 
 ### CONFIRMED 2026-09-14: the Apple GSA client-info block is real
 
@@ -272,6 +273,58 @@ Now built with `String.fromCharCode(10)`, which nothing between Python and the b
 `installer.py` had been well tested against a mock; the thing the browser actually runs had never
 been parsed by anything. **`tests/check_page_js.py` now extracts every `<script>` block from all
 three pages and runs `node --check` on it** — verified to fail by reintroducing this exact bug.
+
+### CONFIRMED 2026-09-14: wireless refresh needs netmuxd, and iOS 26 still allows it
+
+AltStore installed successfully, so the remaining goal is refresh happening with no cable. Measured
+directly on the server, phone unplugged:
+
+```
+idevice_id -l          -> ERROR: Unable to retrieve device list!
+systemctl is-active usbmuxd  -> inactive        (unit is `static`, udev-activated)
+ss -lpx | grep usbmuxd -> nothing, though /var/run/usbmuxd exists as a stale socket file
+```
+
+**That error is not "no devices"** -- an empty list prints nothing and exits 0. It is a socket
+connection failure: nothing was listening. Ubuntu's usbmuxd starts on cable-insert and exits when
+the last device is removed, so an unattended server has no mux at all. Even with one running, stock
+usbmuxd enumerates USB only and has no network-device support.
+
+Everything else in the wireless path was already healthy:
+
+| Layer | Measured |
+|---|---|
+| Subnet | phone `192.168.4.45`, server `192.168.5.16/22` -- same subnet, ICMP fine |
+| Phone advertising | `_apple-mobdev2._tcp` -> `iPhone.local`, TXT `authTag` + `identifier` |
+| **lockdownd over Wi-Fi** | **port 62078 OPEN** |
+| AltServer discoverable | `_altserver._tcp` on `192.168.5.16:37271` |
+
+**62078 is the port that matters.** The port in the mDNS TXT record (32498 here) is a different
+service and returns RST; that looked like a dead phone and was not. The IPv6 link-local address
+embedded in the service name times out -- NDP to a phone's link-local across a bridged VM
+interface is unreliable -- and is irrelevant, since IPv4 works.
+
+So **plain wireless lockdown still exists on iOS 26**. The iOS 17+ RemoteXPC shift that killed
+AltJIT did not take this path with it. (`_remoted._tcp` is absent over Wi-Fi, but that is expected:
+it is advertised over the USB RSD interface.)
+
+**The fix, now in the stack.** netmuxd v0.4.3 (July 2026 -- the README's old "netmuxd >= 0.3" note
+was stale) ships prebuilt Linux binaries, so the image downloads one rather than carrying a Rust
+toolchain. Flags verified against `src/config.rs`, not memory: `--socket-path` (default
+`/var/run/usbmuxd`), `--plist-storage`, `--disable-usb`, `--disable-mdns`, `--disable-heartbeat`.
+It uses the pure-Rust `mdns-sd` crate, not avahi -- so it needs host networking for multicast but
+none of the D-Bus/avahi sockets AltServer requires, and it coexists with the host's avahi on 5353.
+
+**Design decision worth keeping: netmuxd gets a PRIVATE socket path in a named volume, not
+`/var/run/usbmuxd`.** Taking the host socket would mean masking the host's usbmuxd, and a
+bind-mounted socket *file* cannot be replaced from inside a container anyway. On a private path the
+host's usbmuxd keeps handling the cable for first-time pairing and nothing contends. AltServer is
+pointed at netmuxd via `USBMUXD_SOCKET_ADDRESS` -- the `UNIX:` prefix is supported, verified at
+`upstream_repo/libusbmuxd/src/libusbmuxd.c:160`, which calls `socket_connect_unix()` on the
+remainder. Watch the spelling: `USBMUXD_SOCKET_ADRESS` with one D is silently ignored.
+
+The status page now checks BOTH transports separately and reports which one found the device.
+Reporting them together would hide the one failure that matters: USB fine, wireless dead.
 
 ### Other things learned the hard way
 

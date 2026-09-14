@@ -55,12 +55,13 @@ def _result(name, state, summary, detail=None, fix=None):
     return {"name": name, "state": state, "summary": summary, "detail": detail or "", "fix": fix or ""}
 
 
-def _run(cmd, timeout=10):
+def _run(cmd, timeout=10, env=None):
     """Run a command, returning (rc, stdout+stderr). Never raises."""
     if shutil.which(cmd[0]) is None:
         return None, "%s is not installed" % cmd[0]
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        merged = dict(os.environ, **env) if env else None
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=merged)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except subprocess.TimeoutExpired:
         return None, "%s timed out after %ss" % (cmd[0], timeout)
@@ -173,29 +174,91 @@ def check_clock(anisette_time=None):
     return _result("Clock agreement", WARN, "Clock is NOT NTP-synchronised")
 
 
-def check_device():
-    """Is a device visible, and is the pairing record valid?"""
-    rc, out = _run(["idevice_id", "-l"])
+# netmuxd's socket. Set by the stack; the default matches deploy/altserver-stack.yml.
+NETMUXD_SOCKET = os.environ.get("ALTSERVER_NETMUXD_SOCKET", "/run/muxd/usbmuxd")
+
+# libusbmuxd's env var. Note the spelling -- USBMUXD_SOCKET_ADRESS, with one D, is a widely-copied
+# typo that is silently ignored. Verified at upstream_repo/libusbmuxd/src/libusbmuxd.c:158.
+_WIRELESS_ENV = {"USBMUXD_SOCKET_ADDRESS": "UNIX:" + NETMUXD_SOCKET}
+# Empty string makes libusbmuxd fall back to its compiled-in default, /var/run/usbmuxd.
+_USB_ENV = {"USBMUXD_SOCKET_ADDRESS": ""}
+
+
+def _devices_via(env):
+    """(udids, note) over one transport. Distinguishes 'no devices' from 'no mux listening'."""
+    rc, out = _run(["idevice_id", "-l"], env=env)
     if rc is None:
-        return _result("iPhone pairing", UNKNOWN, "idevicepair/idevice_id not available", out,
-                       "Install libimobiledevice-utils.")
+        return None, out
+    # This exact string means libusbmuxd could not reach the socket AT ALL -- a dead or absent
+    # mux. An empty device list is a silent success with no output, which is a completely
+    # different condition and must not be conflated with it.
+    if "Unable to retrieve device list" in out:
+        return None, "no mux is listening on that socket"
+    return [l.strip() for l in out.splitlines() if l.strip()], ""
 
-    udids = [line.strip() for line in out.splitlines() if line.strip()]
-    if not udids:
-        return _result("iPhone pairing", FAIL, "No device detected",
-                       "usbmuxd sees nothing.",
-                       "For the first pairing the phone must be plugged in by USB -- wireless "
-                       "pairing is not possible in this build. On a VM, check USB passthrough.")
 
-    rc, out = _run(["idevicepair", "validate"])
-    if rc == 0:
-        return _result("iPhone pairing", OK, "Pairing valid", "UDID %s" % udids[0])
-    if "passcode" in out.lower():
-        return _result("iPhone pairing", WARN, "Device is locked", out.strip(),
-                       "Unlock the phone and re-check; validation needs it unlocked.")
-    return _result("iPhone pairing", FAIL, "Pairing did not validate", out.strip(),
-                   "Re-pair over USB and tap Trust. Back up BOTH files in /var/lib/lockdown "
-                   "together -- half a pairing is indistinguishable from none.")
+def check_device():
+    """Is the phone reachable, and -- the part that decides unattended refresh -- over WHICH path?
+
+    Wireless is not a nicety here. Stock usbmuxd enumerates USB only, and on Ubuntu its unit is
+    udev-activated: it exits when the last cable is unplugged. So a server with no cable has no mux
+    at all unless netmuxd is running, and every refresh fails with what looks like a device fault.
+    """
+    wireless, wnote = _devices_via(_WIRELESS_ENV)
+    usb, unote = _devices_via(_USB_ENV)
+
+    if wireless:
+        rc, out = _run(["idevicepair", "validate"], env=_WIRELESS_ENV)
+        if rc == 0:
+            return _result("iPhone reachability", OK, "Reachable over Wi-Fi, pairing valid",
+                           "UDID %s via netmuxd%s" % (wireless[0], ", also on USB" if usb else ""))
+        if "passcode" in out.lower():
+            return _result("iPhone reachability", WARN, "Found over Wi-Fi, but the device is locked",
+                           out.strip(), "Unlock the phone and re-check.")
+        return _result("iPhone reachability", FAIL, "Found over Wi-Fi, but pairing did not validate",
+                       out.strip(),
+                       "The pairing record in /var/lib/lockdown is stale or half-written. Re-pair "
+                       "over USB and tap Trust; back up BOTH files together.")
+
+    if usb:
+        return _result(
+            "iPhone reachability", WARN, "Reachable over USB ONLY -- wireless refresh will not work",
+            "UDID %s. netmuxd: %s" % (usb[0], wnote or "running, but reports no device"),
+            "Unattended refresh needs the phone reachable with no cable. Check the netmuxd "
+            "container is up, that the phone is on this LAN, and that it advertises itself "
+            "(see the next check).")
+
+    # Tools absent entirely is not the same as "no device" -- saying FAIL there would be a
+    # confident false negative on a host that simply lacks libimobiledevice.
+    if "not installed" in (wnote or "") and "not installed" in (unote or ""):
+        return _result("iPhone reachability", UNKNOWN, "idevice_id is not available here", wnote,
+                       "Install libimobiledevice-utils. The container image ships it.")
+
+    return _result(
+        "iPhone reachability", FAIL, "No device on either transport",
+        "netmuxd: %s | usbmuxd: %s" % (wnote or "no device", unote or "no device"),
+        "If both say no mux is listening, nothing is serving device access at all. The host's "
+        "usbmuxd is udev-activated and exits with the cable removed, which is normal -- that is "
+        "what the netmuxd container is for.")
+
+
+def check_phone_advertisement():
+    """Is the phone itself discoverable? netmuxd finds it by mDNS, so this is its precondition."""
+    rc, out = _run(["avahi-browse", "-rpt", "_apple-mobdev2._tcp"], timeout=15)
+    if rc is None:
+        return _result("iPhone is advertising", UNKNOWN, "avahi-browse not available", out)
+
+    rows = [l.split(";") for l in out.splitlines() if l.startswith("=")]
+    rows = [r for r in rows if len(r) > 8]
+    if not rows:
+        return _result(
+            "iPhone is advertising", FAIL, "The phone is not advertising _apple-mobdev2._tcp",
+            "netmuxd discovers the device this way, so it cannot find it.",
+            "The phone must be awake, on this Wi-Fi, and have been paired over USB at least once. "
+            "This advert is how a device offers itself for wireless access.")
+
+    seen = sorted({"%s:%s" % (r[7], r[8]) for r in rows})
+    return _result("iPhone is advertising", OK, "Discoverable over mDNS", ", ".join(seen))
 
 
 def check_advertisement(service="_altserver._tcp"):
@@ -255,6 +318,7 @@ def run_all(anisette_url=None):
         anisette,
         check_clock(anisette.get("anisette_time")),
         check_device(),
+        check_phone_advertisement(),
         check_advertisement(),
         check_altserver_running(),
     ]
