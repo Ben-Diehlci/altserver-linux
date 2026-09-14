@@ -488,6 +488,28 @@ out on Linux**, so the revoke proceeds unattended. The cached p12 early-return a
 install flow casually now that AltStore works, and never run a second signing agent (a Mac/Windows
 AltServer, Sideloadly, Xcode) against this Apple ID -- each side re-revokes the other's certificate.
 
+### CONFIRMED 2026-09-14: yaml.safe_load does NOT validate a compose file
+
+A duplicate `depends_on:` key was added to the altserver service and shipped. The local check was
+`yaml.safe_load`, which **silently keeps the last duplicate key** rather than erroring -- so
+validation printed a correct-looking `['anisette', 'netmuxd']` from a file Docker Compose refuses:
+
+```
+failed to parse deploy/altserver-stack.yml:
+line 231: mapping key "depends_on" already defined at line 137
+```
+
+It surfaced at deploy time in Portainer, after a pull -- the slowest place to find it.
+`tests/check_compose.py` now loads every compose file with a SafeLoader subclass whose mapping
+constructor raises on a repeated key, and additionally checks that every named volume a service
+mounts is declared and every `depends_on` target exists. Verified by reintroducing the exact
+duplicate.
+
+Third time this session that a check was weaker than the thing it claimed to verify (after the
+anisette fields compared against empty files, and `idevice_id` run against the wrong
+libimobiledevice). The pattern is the same each time: **the check and the real consumer were not
+the same code path.**
+
 ### Other things learned the hard way
 
 - **`gsa.apple.com` is served from `Apple Server Authentication CA`**, Apple's own private CA,

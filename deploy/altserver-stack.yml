@@ -136,6 +136,8 @@ services:
     restart: unless-stopped
     depends_on:
       - anisette
+      # Wireless device transport. Without it AltServer has no mux to reach the phone through.
+      - netmuxd
 
     # REQUIRED for mDNS. Docker's default AppArmor profile denies D-Bus method calls, blocking
     # the very first one a client makes:
@@ -227,10 +229,6 @@ services:
       # an avahi policy problem (also fine). Symptom: DNSServiceRegister returns -65553 (Refused).
       - /etc/machine-id:/etc/machine-id:ro
       - /var/lib/dbus/machine-id:/var/lib/dbus/machine-id:ro
-
-    depends_on:
-      - anisette
-      - netmuxd
 
     # No IPA argument => daemon mode. The first-time install is a separate one-off run; see
     # BOOTSTRAP.md Phase 4. You can do it from Portainer's container console:
