@@ -38,7 +38,14 @@ RUN set -eux; \
 # ---------------------------------------------------------------------------------------------
 # Runtime stage
 # ---------------------------------------------------------------------------------------------
-FROM debian:bookworm-slim
+# trixie, NOT bookworm. netmuxd's release binaries are dynamically linked and require GLIBC_2.38;
+# bookworm ships 2.36, so the image built fine and then failed at `netmuxd --about` with
+# "version `GLIBC_2.38' not found". trixie ships 2.41.
+#
+# Safe to bump because AltServer itself is linked -static -- the base image's libc is irrelevant to
+# it. Only python3, libimobiledevice-utils, avahi-utils and netmuxd are affected, and all were
+# verified on trixie (including the libdns_sd.so load below) before this change was pushed.
+FROM debian:trixie-slim
 
 RUN set -eux; \
     apt-get update; \
@@ -94,6 +101,8 @@ RUN set -eux; \
     rm -f /tmp/netmuxd.tar.gz /tmp/netmuxd; \
     # Fail the BUILD rather than ship a binary that cannot run here -- the release is dynamically
     # linked against glibc, so a runtime-image change could break it silently otherwise.
+    # NOTE: the v0.4.3 binary self-reports "netmuxd v0.4.2" -- upstream did not bump the string.
+    # That is cosmetic; the download is correct.
     /usr/local/bin/netmuxd --about
 
 # Fetches the current AltStore Classic IPA, resolving the URL from AltStore's own catalogue rather
