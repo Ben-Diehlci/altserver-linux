@@ -200,8 +200,9 @@ INSTALL_PAGE = PAGE[:PAGE.index("<body>")].replace(
   </div>
 
   <form id="f" class="card" onsubmit="return start(event)">
-    <label>Device UDID<br><input name="udid" id="udid" style="width:100%;padding:.45rem;margin:.3rem 0 .7rem"
-      placeholder="from the pairing page" required></label>
+    <label>Device UDID<br><input name="udid" id="udid" style="width:100%;padding:.45rem;margin:.3rem 0 .25rem"
+      placeholder="detecting\u2026" required></label>
+    <div id="udidnote" class="meta" style="display:none;margin-bottom:.7rem"></div>
     <label>Apple ID<br><input name="apple_id" type="email" style="width:100%;padding:.45rem;margin:.3rem 0 .7rem" required></label>
     <label>Password<br><input name="password" type="password" style="width:100%;padding:.45rem;margin:.3rem 0 .7rem" required></label>
     <button type="submit" style="padding:.5rem 1rem;font-weight:600">Install AltStore</button>
@@ -273,6 +274,31 @@ async function poll(){
     if (d.error) showMsg(d.error);
   }catch(e){}
 }
+// The pairing page already knows the UDID. Making someone copy it across by hand is a step that
+// can only go wrong -- and an empty field produced the least helpful failure available: a
+// validation error that used to render as barely-visible grey text.
+async function fillUdid(){
+  const el = document.getElementById('udid');
+  const note = document.getElementById('udidnote');
+  try{
+    const d = await (await fetch('/api/pairing',{cache:'no-store'})).json();
+    if (d.udids && d.udids.length){
+      if (!el.value) el.value = d.udids[0];        // never clobber something typed by hand
+      note.textContent = d.paired
+        ? 'Detected and paired.'
+        : 'Detected, but the pairing is not valid \u2014 the install will fail until it is.';
+      note.style.display = '';
+      if (!d.paired) note.innerHTML += ' <a href="/pairing">Fix pairing \u2192</a>';
+    } else {
+      el.placeholder = 'no device detected';
+      note.innerHTML = 'No device is connected. <a href="/pairing">Pair your iPhone first \u2192</a>';
+      note.style.display = '';
+    }
+  }catch(e){
+    el.placeholder = 'enter the device UDID';
+  }
+}
+fillUdid();
 poll(); setInterval(poll, 1500);
 </script>
 </body>
