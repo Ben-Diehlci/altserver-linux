@@ -198,6 +198,40 @@ avahi-browse -art | grep -iE "iphone|ipad|_companion-link|_rdlink|_airplay|_raop
 If the phone appears there, `_altserver._tcp` will reach it too. If it does not, fix multicast
 before touching anything else — nothing downstream can work without it.
 
+**CONFIRMED 2026-09-14.** `avahi-browse -art` on the VM (192.168.9.16, ens18, Ubuntu 24.04.4)
+sees `_companion-link._tcp` from Apple devices over both IPv4 and IPv6. Multicast crosses from
+Wi-Fi to the wired VM. Topology is settled. Installing `avahi-utils` also pulled in
+`avahi-daemon`, which was NOT previously present and which the compat layer requires — so that
+was a necessary prerequisite obtained by accident.
+
+### mDNS advertisement is a SILENT failure — the top risk for unattended operation
+
+`libraries/dnssd_loader/dnssd_loader.cpp` does not link Bonjour. `DNSServiceRegister` builds a
+Python one-liner, forks, and `execlp`s `python3 -c "from ctypes import *; dll = CDLL('libdns_sd.so'); ..."`
+(`:25`, `:66`). The parent branch of the fork is literally `else { ; }` — `status` is declared at
+`:53` and never used, there is no `waitpid`, and the function `return 0`s unconditionally at
+`:69`. **Advertisement failure is therefore indistinguishable from success inside AltServer.**
+
+Consequences, and they are exactly the wrong shape for a headless box:
+
+- If `python3` is missing, or `libdns_sd.so` cannot be dlopened, AltServer runs normally, reports
+  nothing wrong, and is permanently undiscoverable by the phone. The only evidence is the child's
+  Python traceback on stderr — unlabelled, and under systemd it lands in the journal interleaved
+  with the parent's output. Reproduced in the alpine build container.
+- **`libavahi-compat-libdnssd1` alone is NOT sufficient**, despite being the usual advice: it
+  ships `libdns_sd.so.1`, while `CDLL('libdns_sd.so')` dlopens the *unversioned* soname, whose
+  symlink comes from **`libavahi-compat-libdnssd-dev`**. Verify with the same call the program
+  makes:
+
+  ```bash
+  python3 -c "from ctypes import CDLL; CDLL('libdns_sd.so'); print('libdns_sd.so OK')"
+  ```
+
+- `avahi-daemon` must be installed AND running for the compat layer to work.
+- For the container plan (item 7): the image needs `python3` **and** the compat dev package. A
+  minimal image will silently fail to advertise.
+
+
 ### Next up
 
 1. **`ServerError` recovery suggestion is Windows-only advice.** `ServerError.hpp:170` returns
@@ -243,7 +277,12 @@ before touching anything else — nothing downstream can work without it.
    `network_mode: host` and an absolute bind mount for `AltServerData`. Pairs with item 6.
    Remember `./AltServerData` is a **relative** path, so `WorkingDirectory` / the container
    workdir matters.
-8. **getopt hygiene** (`src/AltServerMain.cpp`). `case 'a'` has no `break` and falls through to
+8. **Make mDNS advertisement failure loud.** `dnssd_loader.cpp` never waits on the forked
+   python3 child and always returns success, so an unadvertised server is silently invisible —
+   the single worst failure mode for unattended operation. Fix: `waitpid` with a short timeout,
+   or at minimum check the child did not exit immediately, and log unmistakably on failure.
+   Small patch, high value for this deployment.
+9. **getopt hygiene** (`src/AltServerMain.cpp`). `case 'a'` has no `break` and falls through to
    `case 'p'`, so `-a` sets *both* appleID and password; `-h` is documented and handled at
    `case 'h'` but absent from the optstring `"u:i:a:p:P:d"`, so it is unreachable; five `char*`
    are uninitialised. All real UB — but fix as hygiene and claim no issue: across 16 pasted
