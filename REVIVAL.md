@@ -87,6 +87,25 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | `65a5727` | **#131 fixed** via the ldid rewriter: capture the SHA-256 CodeDirectory hash before truncating to 20 bytes. Build-verified; **not** verified on an iOS 26 device. |
 | `654907a` | **mDNS advertisement failure made loud.** Both failure paths verified; success path NOT verified locally — no working avahi in the build container. Must be confirmed on the real host. |
 | `b885501` | **anisette error handling** rewritten; `mktime`→`timegm`; `ResetProvisioning` Windows-path bug. Closes #104. |
+| `301eb8b` | **Daemon warns at startup** when no anisette server is configured, instead of looking healthy and failing at first use. Warns rather than exits: only `AnisetteDataRequest` needs anisette; AltJIT and profile requests do not. |
+| `4f5c086` | **Anisette as a Portainer stack** — and the volume path the upstream README gets wrong (`lib/` holds only the `.so` cache; the identity is one level up). |
+| `e2a2c36` | **Non-200 from Apple's auth endpoint reported** instead of surfacing as "invalid response". The status was logged then discarded, so a 429 became a plist parse failure. |
+| `f88d87f` | `--help` registered as a long option — it was documented and handled but missing from `long_options`, so it hit the error path. |
+| `22ea3fc` | Pairing wizard detects an existing backup, and only counts one containing **both** plists. |
+| `d0495b3` | README: removed instructions that were actively wrong (missing `cd build`, the stale `-mno-default` ARM warning, corecrypto steps for a distribution Apple no longer ships). |
+| `9507c25` | **GrandSlam 429 fixed.** `gsaClient()` returns a fresh client per call, so each request opens its own connection. Proven by probe, then confirmed by a real sign-in. |
+| `3b3f672` + `4be5f9f` | **CI iteration cost cut.** `fail-fast: false`, and amd64-only on branch pushes with the full matrix on tags / schedule / `all_arches`. |
+| `dcac3de` | **Credentials from the environment** (`ALTSERVER_UDID` / `_APPLE_ID` / `_APPLE_PASSWORD`), so a detached container works and the password is not in `ps`. |
+| `7b8a3eb` | **Containerised.** Multi-stage `Dockerfile` bundling every runtime prerequisite and verifying `libdns_sd.so` loads at build time; `deploy/altserver-stack.yml`; `build_image.yml` publishing to the fork's OWN namespace. |
+| `4f97ab4` | **Named volumes** — no host `mkdir`, and no `chown`, since a fresh volume inherits the image path's ownership. |
+| `41d7a76` | **AltStore IPA fetched automatically** on start, resolved from AltStore's own catalogue so it is always current. Idempotent, atomic, verifies a `Payload/*.app`, non-fatal on failure. |
+| `732f5a5` `63b27a9` `9b57afd` | **Setup web UI**, three slices: status dashboard, pairing wizard, and install with in-browser 2FA entry. |
+| `f3cbbf3` | Web UI runs as a stack service on `:8099`; image gains the tools its checks shell out to. |
+| `308c9b9` | **`ThreadingHTTPServer`** — the single-threaded server was serialising every page behind slow checks. Measured: a 10s request no longer blocks others. |
+| `a3937e6` | Install page auto-populates the UDID from `/api/pairing`. |
+| `64d7441` | Two status checks that reported nonsense: the process check was a PID-namespace false negative, and the clock check used `timedatectl`, which cannot work in a container. |
+| `af2be1e` | **mDNS from a container needs AppArmor rules.** Tested profile + installer; see below. |
+| `1bd0183` | README rewritten for the current state, leading with an honest status table. |
 
 ### CONFIRMED 2026-09-14: the Apple GSA client-info block is real
 
@@ -163,6 +182,64 @@ Known remaining divergence, NOT the cause: our sanitizer replaces only the bundl
 the wire value is `com.apple.akd/3594.4.19` — akd has never carried an Xcode build number.
 Upstream PR #1790 replaces the whole token with `com.apple.akd/1.0`. Worth tightening separately;
 it is identical in both requests so it cannot explain 200-then-429.
+
+### CONFIRMED 2026-09-14: mDNS from a container is blocked by AppArmor, not by anything it looks like
+
+The daemon ran, anisette was healthy, pairing was valid — and `_altserver._tcp` was never
+published. `DNSServiceRegister` returned **-65553 (`kDNSServiceErr_Refused`)**.
+
+**Cause: Docker's `docker-default` AppArmor profile contains no `dbus` rules, and AppArmor denies
+a mediated class a profile does not mention.** So the very first call any D-Bus client makes is
+refused, and avahi-compat never connects:
+
+```
+apparmor="DENIED" operation="dbus_method_call" bus="system"
+path="/org/freedesktop/DBus" member="Hello" label="docker-default"
+```
+
+**Everything else looks correct while this is happening**, which is what makes it expensive:
+the sockets are `srw-rw-rw-`, avahi's D-Bus policy allows the default context, the container is
+uid 0 with no userns remapping, and the host publishes fine with `avahi-publish`. None of it is
+ever consulted — the call never leaves the container.
+
+Four hypotheses were wrong before the right one: TLS interception (the cert is genuinely Apple's,
+from their private CA), a missing `/etc/machine-id` (mounting it changed nothing), socket
+permissions, and D-Bus policy. **The kernel audit log named it exactly.** For anything
+inexplicably denied inside a container, `sudo dmesg | grep -i 'apparmor.*DENIED'` is the first
+move, not the last.
+
+Fix, both shipped:
+
+| | |
+|---|---|
+| `apparmor=unconfined` | The stack default — **only** because a container requesting a profile the host has not loaded FAILS TO START, which would break deploying straight from the repo |
+| `deploy/apparmor/altserver-mdns` | `docker-default` verbatim plus the narrowest D-Bus rules Bonjour needs (bus handshake + `org.freedesktop.Avahi`, nothing else). Install with `deploy/apparmor/install.sh` |
+
+Tested rather than argued: under `docker-default` the call fails `Access denied` with one AppArmor
+denial in `dmesg`; under `altserver-mdns` it reaches the daemon with **zero** denials, and
+`/proc/self/attr/current` reads `altserver-mdns (enforce)`.
+
+**This step cannot be automated into the deployment.** AppArmor profiles load into the host kernel
+as root, and `security_opt` only *selects* an already-loaded profile. That is a property of
+AppArmor, not a packaging gap — the only alternative would be a privileged init container mounting
+`/sys/kernel/security`, which is a far larger hole than the one being closed.
+
+### Other things learned the hard way
+
+- **`gsa.apple.com` is served from `Apple Server Authentication CA`**, Apple's own private CA,
+  which no public trust store contains. `curl` rejects it as self-signed. So
+  `set_validate_certificates(false)` in `AppleAPI.cpp` is **required**, not careless — pinning
+  Apple's CA would be better, but validation cannot succeed as things stand.
+- **A verification that cannot fail is worse than none.** The anisette persistence check reported
+  four fields "stable" when the server was returning nothing, because `jq -r` on an empty file
+  prints an empty string and exits 0. Same family as `DNSServiceRegister` returning success
+  unconditionally, and the CI `chmod +x` that was a no-op.
+- **`HTTPServer` is single-threaded.** Three pages polling at 30s/5s/1.5s serialised behind checks
+  that take up to 15s, which presented as the UI freezing when switching pages.
+- **Containers have separate PID namespaces**, so a sidecar's `pgrep` cannot see the daemon —
+  a confident false negative, fixed with `pid: host` plus a check that knows when it is blind.
+- **`timedatectl` cannot work in a container.** Drift against the *anisette server's* timestamp is
+  both measurable there and the thing that actually breaks sign-in.
 
 ### Verified facts worth not re-deriving
 
@@ -387,7 +464,23 @@ confirm. B is a small patch. D is a substantial one. None are blocked by anythin
   need `sudo`.
   **Confirmed: this server returns `com.apple.dt.Xcode/3594.4.19` in `X-MMe-Client-Info`**, so the
   PR #135 sanitizer is load-bearing for sign-in. Leave `ALTSERVER_NO_CLIENTINFO_SANITIZE` unset.
-- **Phase 4 — install: NEXT.**
+- **Phase 4 — install: sign-in WORKS.** Full Apple authentication completes — SRP, 2FA, team
+  lookup, device registration, certificate issuance, all `200`. As far as can be told this is the
+  first completed AltServer-Linux sign-in reported in 2026.
+  **Still failing at the archive step:** `com.rileytestut.Archive (2)` / "The app could not be
+  found" after "Importing app... Downloaded app!". Undiagnosed — the IPA had vanished (named-volume
+  redeploy) before it could be inspected. Now fetched automatically and verified present at the
+  right size, so it may not recur. If it does, `/tmp` space inside the container is the next
+  suspect: unpacking a 33 MB IPA needs roughly double that.
+- **Phase 5 — does AltStore open on iOS 26?** The real test of the #131 fix, and the last genuine
+  unknown in the whole exercise.
+
+### Security note
+
+A successful sign-in prints Apple's entire account record to stdout — real name, phone number,
+`adsid`, and a dozen bearer tokens including `com.apple.gs.icloud.auth` with a **one-year**
+lifetime. That reaches `docker logs` and journald. The web UI filters all of it before display,
+but the CLI does not. Treat any captured install log as credential material.
 
 ### Confirmed deployment facts
 
