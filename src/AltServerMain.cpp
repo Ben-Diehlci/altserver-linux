@@ -83,8 +83,11 @@ void print_help() {
 			"  -d  --debug            Print debug output, can be used several times to increase debug level.\n"
 			"\n"
 			"The following environment var can be set for some special situation:\n"
-			"  - ALTSERVER_ANISETTE_SERVER: Set to custom anisette server URL\n"
-			"          if not set, the default one: https://armconverter.com/anisette/irGb3Quww8zrhgqnzmrx, is used\n"
+			"  - ALTSERVER_ANISETTE_SERVER: (REQUIRED) URL of an anisette server, including\n"
+			"          the scheme, e.g. http://127.0.0.1:6969\n"
+			"          There is no default. The server that used to be hardcoded here has been\n"
+			"          returning HTTP 502 since 2026-09, and pointing every user at one shared\n"
+			"          anisette identity can get Apple IDs locked. See the README.\n"
 			"  - ALTSERVER_NO_SUBSCRIBE: (*unused*) Please enable this for usbmuxd server that do not correctly usbmuxd_listen interfaces\n"
 			);
 }

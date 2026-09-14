@@ -15,8 +15,11 @@ Usage:  AltServer-Linux options [ ipa-file ]
   -d  --debug            Print debug output, can be used several times to increase debug level.
 
 The following environment var can be set for some special situation:
-  - ALTSERVER_ANISETTE_SERVER: Set to custom anisette server URL
-          if not set, the default one: https://armconverter.com/anisette/irGb3Quww8zrhgqnzmrx, is used
+  - ALTSERVER_ANISETTE_SERVER: (REQUIRED) URL of an anisette server, including
+          the scheme, e.g. http://127.0.0.1:6969
+          There is no default. The server that used to be hardcoded here has been
+          returning HTTP 502 since 2026-09, and pointing every user at one shared
+          anisette identity can get Apple IDs locked.
   - ALTSERVER_NO_SUBSCRIBE: (*unused*) Please enable this for usbmuxd server that do not correctly usbmuxd_listen interfaces
 ```
 
@@ -28,7 +31,8 @@ The following environment var can be set for some special situation:
 ## TODO / Special Features
 - [x] Track upstream (AltServer-Windows) develop branch (i.e. Beta version)
 - [x] Support Offline Anisette Data Generation (i.e. without Sideloadly)
-  - Finsihed, please run [alt_anisette_server](https://hub.docker.com/r/nyamisty/alt_anisette_server) & use `ALTSERVER_ANISETTE_SERVER` to specify custom server URL
+  - You must supply your own anisette server and point `ALTSERVER_ANISETTE_SERVER` at it. There is no default.
+  - This project historically suggested [alt_anisette_server](https://hub.docker.com/r/nyamisty/alt_anisette_server), but that image was last published in **April 2022** and has not been verified against Apple's current authentication flow. Treat it as a starting point, not a recommendation.
 - [x] Support Wi-Fi Refresh
   - [netmuxd](https://github.com/jkcoxson/netmuxd) now supports network devices (needs version > v0.1.1, be sure to check pre-release)
     - Download `netmuxd`, stop the original `usbmuxd`, and run `netmuxd` before running `AltServer-Linux`
