@@ -141,11 +141,26 @@ docker restart <anisette-container>
 sleep 5
 curl -s http://127.0.0.1:6969 > /tmp/a2.json
 
+# Guard FIRST: jq -r on an empty file prints an empty string and exits 0, so without this
+# the comparison below happily reports every field "stable" when the server returned nothing.
+for f in /tmp/a1.json /tmp/a2.json; do
+  [ -s "$f" ] || { echo "FAIL: $f is EMPTY -- the server returned nothing. Fix that first."; exit 1; }
+  jq -e . "$f" >/dev/null 2>&1 || { echo "FAIL: $f is not valid JSON:"; head -c 200 "$f"; exit 1; }
+done
+
 for k in X-Apple-I-MD-M X-Apple-I-MD-LU X-Mme-Device-Id X-Apple-I-SRL-NO; do
-  a=$(jq -r ".\"$k\"" /tmp/a1.json); b=$(jq -r ".\"$k\"" /tmp/a2.json)
+  a=$(jq -er ".\"$k\"" /tmp/a1.json 2>/dev/null) || { echo "$k MISSING from first response"; continue; }
+  b=$(jq -er ".\"$k\"" /tmp/a2.json 2>/dev/null) || { echo "$k MISSING from second response"; continue; }
   [ "$a" = "$b" ] && echo "$k stable" || echo "$k CHANGED -- state is not persisting"
 done
 ```
+
+> **Check the server answers at all before trusting any of this.** `curl … | jq` prints nothing on
+> an empty response, which looks like a pass at a glance:
+> ```bash
+> curl -s --max-time 5 http://127.0.0.1:6969 | tee /tmp/raw.json | head -c 400
+> echo "bytes: $(wc -c < /tmp/raw.json)"    # 0 bytes means nothing is serving there
+> ```
 
 Those four must be **identical**. `X-Apple-I-MD` is a one-time password and *should* differ.
 If anything changed, find where the ADI blob actually lives and mount that path properly.
