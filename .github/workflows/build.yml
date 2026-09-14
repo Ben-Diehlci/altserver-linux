@@ -74,7 +74,18 @@ jobs:
     needs: [check]
     strategy:
       matrix:
-        builder: [ghcr.io/nyamisty/altserver_builder_alpine_armv7, ghcr.io/nyamisty/altserver_builder_alpine_aarch64, ghcr.io/nyamisty/altserver_builder_alpine_amd64, ghcr.io/nyamisty/altserver_builder_alpine_i386]
+        # `include:`-only matrix: still exactly 4 legs, but each now carries a short `arch`
+        # label. actions/upload-artifact rejects '/' and ':' in artifact names, so the image
+        # reference cannot be used as the name -- hence this label.
+        include:
+          - arch: armv7
+            builder: ghcr.io/nyamisty/altserver_builder_alpine_armv7
+          - arch: aarch64
+            builder: ghcr.io/nyamisty/altserver_builder_alpine_aarch64
+          - arch: amd64
+            builder: ghcr.io/nyamisty/altserver_builder_alpine_amd64
+          - arch: i386
+            builder: ghcr.io/nyamisty/altserver_builder_alpine_i386
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -109,8 +120,9 @@ jobs:
           sudo rm -rf build
           git clean -fdX
       - name: Upload to github artifact
-        uses: NyaMisty/upload-artifact-as-is@master
+        uses: actions/upload-artifact@v7
         with:
+          name: AltServer-${{ matrix.arch }}
           path: /tmp/build_output
 
   release:
@@ -125,7 +137,7 @@ jobs:
       run: |
         mkdir -p build_output
     - name: "Download all artifacts"
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         path: build_output
     - name: "Rearrange artifacts"
