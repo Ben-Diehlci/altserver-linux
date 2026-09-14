@@ -151,6 +151,14 @@ services:
     # on the real _altserver._tcp advertisement rather than a bridged illusion of it.
     network_mode: host
 
+    # Lets the status page see whether the AltServer daemon is actually running. Containers have
+    # separate PID namespaces, so without this a sidecar reports "not running" no matter how
+    # healthy the daemon is -- a confident false negative, which is worse than no check.
+    # Remove it if you would rather not expose the host process list; the page then reports that
+    # check as "unknown" and tells you to judge by the mDNS result instead, which is the
+    # trustworthy signal anyway.
+    pid: host
+
     depends_on:
       - anisette
 

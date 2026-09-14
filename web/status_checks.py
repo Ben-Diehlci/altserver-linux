@@ -19,11 +19,13 @@ So the first symptom of a broken deployment is an app that will not open, a week
 checks exist to turn that into something visible.
 """
 
+import calendar
 import json
 import os
 import shutil
 import socket
 import subprocess
+import time
 import urllib.error
 import urllib.request
 
@@ -43,6 +45,10 @@ ANISETTE_REQUIRED_KEYS = [
 ]
 
 OK, WARN, FAIL, UNKNOWN = "ok", "warn", "fail", "unknown"
+
+
+def _in_container():
+    return os.path.exists("/.dockerenv")
 
 
 def _result(name, state, summary, detail=None, fix=None):
@@ -127,19 +133,44 @@ def check_anisette(url=None):
         detail += " | client-info contains com.apple.dt.Xcode, so the built-in sanitizer is " \
                   "load-bearing (leave ALTSERVER_NO_CLIENTINFO_SANITIZE unset)"
 
-    return _result("Anisette server", OK, "All 10 fields present, all strings, HTTP 200", detail)
+    ok = _result("Anisette server", OK, "All 10 fields present, all strings, HTTP 200", detail)
+    ok["anisette_time"] = data.get("X-Apple-I-Client-Time")
+    return ok
 
 
-def check_clock():
-    """The anisette server's timestamp is forwarded to Apple verbatim, so skew matters."""
+def check_clock(anisette_time=None):
+    """Drift against the ANISETTE server's clock is what actually matters.
+
+    Linux forwards the anisette server's X-Apple-I-Client-Time to Apple verbatim (macOS stamps
+    Date() locally instead), so NTP on the AltServer host proves nothing on its own. Comparing the
+    two directly measures the thing that breaks sign-in, and unlike timedatectl it works inside a
+    container.
+    """
+    if anisette_time:
+        try:
+            parsed = time.strptime(anisette_time[:19], "%Y-%m-%dT%H:%M:%S")
+            skew = abs(calendar.timegm(parsed) - time.time())
+            if skew <= 30:
+                return _result("Clock agreement", OK,
+                               "Anisette clock within %ds of ours" % int(skew),
+                               "Anisette said %s" % anisette_time)
+            return _result("Clock agreement", FAIL,
+                           "Anisette clock is %ds away from ours" % int(skew),
+                           "Anisette said %s" % anisette_time,
+                           "Apple sees the anisette server's timestamp verbatim. Skew surfaces as "
+                           "an opaque -36607 with nothing naming time as the cause. Fix NTP on "
+                           "whichever host runs anisette -- not just this one.")
+        except Exception:
+            pass
+
     rc, out = _run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
     if rc is None:
-        return _result("Host clock", UNKNOWN, "Could not determine NTP status", out)
+        return _result("Clock agreement", UNKNOWN, "No anisette timestamp to compare against",
+                       "timedatectl is unavailable here, which is normal in a container.",
+                       "This resolves itself once the anisette check above succeeds.")
     if out.strip() == "yes":
-        return _result("Host clock", OK, "NTP synchronised")
-    return _result("Host clock", WARN, "Clock is NOT NTP-synchronised",
-                   "Apple sees the anisette server's timestamp verbatim.",
-                   "Skew surfaces as an opaque -36607 with nothing naming time as the cause.")
+        return _result("Clock agreement", OK, "NTP synchronised")
+    return _result("Clock agreement", WARN, "Clock is NOT NTP-synchronised")
 
 
 def check_device():
@@ -186,25 +217,43 @@ def check_advertisement(service="_altserver._tcp"):
                    "dlopens the unversioned libdns_sd.so) and that avahi-daemon is running.")
 
 
-def check_altserver_running(port_hint=None):
-    """Is the process up? Note it binds an EPHEMERAL port, so no fixed port can be checked."""
+def check_altserver_running():
+    """Is the daemon up? Only meaningful if we can actually see its process.
+
+    Each container has its own PID namespace, so from a sidecar this sees nothing no matter how
+    healthy the daemon is. Rather than report a confident false negative, say so -- and point at
+    the mDNS check, which is the trustworthy signal either way.
+    """
     rc, out = _run(["pgrep", "-af", "AltServer"])
     if rc is None:
         return _result("AltServer process", UNKNOWN, "Could not check", out)
-    lines = [l for l in out.splitlines() if "AltServer" in l and "pgrep" not in l]
+
+    lines = [l for l in out.splitlines() if "AltServer" in l and "pgrep" not in l
+             and "server.py" not in l]
     if lines:
         return _result("AltServer process", OK, "Running", lines[0][:160])
+
+    if _in_container() and not os.path.exists("/proc/1/root/usr/local/bin/AltServer"):
+        return _result(
+            "AltServer process", UNKNOWN,
+            "Cannot see other containers' processes from here",
+            "Containers have separate PID namespaces, so this check is blind unless the service "
+            "runs with pid: host.",
+            "Judge by the mDNS check above -- if _altserver._tcp is published, something is "
+            "advertising it and the daemon is alive.")
+
     return _result("AltServer process", FAIL, "Not running",
                    "Nothing to discover, and no refreshes will happen.",
-                   "Note AltServer has no liveness signal: Listen() can fail early and the "
-                   "process stays alive with no listener, so 'running' is necessary, not "
-                   "sufficient -- trust the mDNS check above over this one.")
+                   "AltServer has no liveness signal: Listen() can fail early and the process "
+                   "stays alive with no listener, so 'running' is necessary but not sufficient. "
+                   "Trust the mDNS check above over this one.")
 
 
 def run_all(anisette_url=None):
+    anisette = check_anisette(anisette_url)
     checks = [
-        check_anisette(anisette_url),
-        check_clock(),
+        anisette,
+        check_clock(anisette.get("anisette_time")),
         check_device(),
         check_advertisement(),
         check_altserver_running(),
