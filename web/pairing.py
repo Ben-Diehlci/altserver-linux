@@ -44,6 +44,29 @@ def _in_container():
     return os.path.exists("/.dockerenv")
 
 
+def _find_pairing_backup():
+    """Find a lockdown backup that contains BOTH required plists. Returns (path, summary)."""
+    import glob
+    import tarfile
+
+    candidates = []
+    for pattern in ("~/lockdown-backup*.tgz", "~/lockdown-backup*.tar.gz",
+                    "/root/lockdown-backup*.tgz", "~/*lockdown*.tgz"):
+        candidates.extend(glob.glob(os.path.expanduser(pattern)))
+
+    for path in sorted(set(candidates), key=os.path.getmtime, reverse=True):
+        try:
+            with tarfile.open(path) as tf:
+                names = tf.getnames()
+        except Exception:
+            continue
+        has_system = any(n.endswith("SystemConfiguration.plist") for n in names)
+        has_device = any(re.search(r"/[0-9A-Fa-f-]{8,}\.plist$", n) for n in names)
+        if has_system and has_device:
+            return path, "contains both plists"
+    return None, ""
+
+
 def diagnose():
     """Return an ordered wizard state: which step you are on, and what to do about it."""
     steps = []
@@ -111,17 +134,23 @@ def diagnose():
     if rc == 0:
         steps.append({"title": "Pairing valid", "state": STEP_OK,
                       "detail": out, "action": "", "note": ""})
+        # Look for an existing backup rather than nagging about one already taken. Only counts
+        # it if the archive actually contains BOTH files -- an archive with one of them is worse
+        # than none, because it restores a mismatched HostID/SystemBUID that iOS rejects.
+        backup, why = _find_pairing_backup()
         steps.append({
             "title": "Back up the pairing record",
-            "state": STEP_TODO,
-            "detail": "Losing it means fetching the cable again.",
-            "action": "sudo tar czf ~/lockdown-backup.tgz /var/lib/lockdown/",
+            "state": STEP_OK if backup else STEP_TODO,
+            "detail": ("Found %s (%s)" % (backup, why)) if backup
+                      else "Losing it means fetching the cable again.",
+            "action": "" if backup else "sudo tar czf ~/lockdown-backup.tgz /var/lib/lockdown/",
             "note": "Back up BOTH <UDID>.plist and SystemConfiguration.plist together. They are "
                     "not independent -- restoring only one produces a mismatched HostID/SystemBUID "
                     "that iOS rejects, reported as the same generic error as every other "
                     "lockdownd fault. Half a pairing is indistinguishable from none.",
         })
-        return {"steps": steps, "udids": udids, "paired": True, "next": "Back up the pairing record"}
+        return {"steps": steps, "udids": udids, "paired": True,
+                "next": "Nothing -- setup complete" if backup else "Back up the pairing record"}
 
     if "passcode" in low:
         steps.append({
