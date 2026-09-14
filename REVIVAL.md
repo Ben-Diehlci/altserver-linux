@@ -225,13 +225,13 @@ check and would invalidate a lot of downstream work, so check it first.
    cannot write to, so it fails on the fork regardless. Only worth fixing if we decide to own
    our own builder images. Separately, `build_docker.sh` passes no `--platform`, so all four
    builds run as host-arch regardless of the arch-specific base image.
-8. **Purpose-built container for the Portainer stack.** Given the host is Docker-on-Ubuntu
+7. **Purpose-built container for the Portainer stack.** Given the host is Docker-on-Ubuntu
    managed by Portainer, and `ghcr.io/ben-diehlci/` already exists, the natural end state is an
    image containing `AltServer-x86_64`, `python3` and `libavahi-compat-libdnssd1`, deployed with
    `network_mode: host` and an absolute bind mount for `AltServerData`. Pairs with item 6.
    Remember `./AltServerData` is a **relative** path, so `WorkingDirectory` / the container
    workdir matters.
-9. **getopt hygiene** (`src/AltServerMain.cpp`). `case 'a'` has no `break` and falls through to
+8. **getopt hygiene** (`src/AltServerMain.cpp`). `case 'a'` has no `break` and falls through to
    `case 'p'`, so `-a` sets *both* appleID and password; `-h` is documented and handled at
    `case 'h'` but absent from the optstring `"u:i:a:p:P:d"`, so it is unreachable; five `char*`
    are uninitialised. All real UB — but fix as hygiene and claim no issue: across 16 pasted
