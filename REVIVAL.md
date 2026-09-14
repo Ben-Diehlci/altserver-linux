@@ -108,6 +108,8 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | `1bd0183` | README rewritten for the current state, leading with an honest status table. |
 | `2a2e99e` | **JS syntax error fixed** — a literal newline in a string literal was killing every page's script block. All three pages now `node --check`ed. |
 | `b98a01e` | **`paths:` filter fixed** — `web/**` changes were not rebuilding the image, so five commits of fixes never shipped. |
+| `bb4713d` | REVIVAL.md: both findings written up. |
+| *(this)* | **Two CI guards added** (`tests/`), each verified to fail by reintroducing the original bug. |
 
 ### CONFIRMED 2026-09-14: the Apple GSA client-info block is real
 
@@ -250,6 +252,11 @@ correct.
    Note `:latest` does not re-pull on its own — a Portainer stack update needs **Re-pull image**
    ticked, so a deploy can silently reuse a months-old layer.
 
+**`tests/check_workflow_paths.py` now enforces rule 1**: it cross-checks every `COPY` in the
+Dockerfile against the `paths:` filter and fails if something entering the image would not
+rebuild it. It runs from `build.yml`, not `build_image.yml` — a guard living inside the filtered
+workflow would be skipped by precisely the bug it detects.
+
 ### CONFIRMED 2026-09-14: one bad JS escape broke every page
 
 The install page did nothing: the form would not submit, no log appeared, the state stayed on its
@@ -262,8 +269,9 @@ when the page was generated, which is a syntax error and kills the entire `<scri
 symptom followed from that one line, which is why it presented as several unrelated faults.
 
 Now built with `String.fromCharCode(10)`, which nothing between Python and the browser can mangle.
-**All three pages are checked with `node --check` now** — `installer.py` had been well tested
-against a mock, but the thing the browser actually runs had never been parsed by anything.
+`installer.py` had been well tested against a mock; the thing the browser actually runs had never
+been parsed by anything. **`tests/check_page_js.py` now extracts every `<script>` block from all
+three pages and runs `node --check` on it** — verified to fail by reintroducing this exact bug.
 
 ### Other things learned the hard way
 

@@ -28,6 +28,29 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  # Two guards for failures that were invisible while everything reported success. They live HERE,
+  # in the workflow with no paths: filter, because one of them detects a broken paths: filter --
+  # a guard inside build_image.yml would be skipped by exactly the bug it is meant to catch.
+  #
+  # Fast and dependency-free, so they gate nothing and cost nothing.
+  guards:
+    runs-on: ubuntu-latest
+    name: "Guards"
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      # An omitted paths: entry meant five commits of web fixes never reached a published image,
+      # while CI stayed green and the deployment kept serving the old code.
+      - name: Everything copied into the image triggers a rebuild
+        run: python3 tests/check_workflow_paths.py
+
+      # A literal newline inside a JS string literal once killed an entire <script> block. The
+      # Python was well tested; nothing ever parsed what the browser actually runs.
+      - name: Generated pages emit valid JavaScript
+        run: python3 tests/check_page_js.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"
