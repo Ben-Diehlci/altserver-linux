@@ -95,6 +95,10 @@ void print_help() {
 int main(int argc, char *argv[]) {
 	static struct option long_options[] =
         {
+          // "help" was documented in the usage text and handled in the switch, but was never
+          // listed here -- so --help fell through to the error branch, printing
+          // "?? getopt returned character code 077 ??" above the usage and exiting 1.
+          {"help",		no_argument,			0, 'h'},
           {"udid",		required_argument,   	0, 'u'},
           {"appleID",	required_argument,      0, 'a'},
           {"password",	required_argument,      0, 'p'},
