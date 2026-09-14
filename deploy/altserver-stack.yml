@@ -130,6 +130,48 @@ services:
     # It needs an interactive console because the 2FA code is read from stdin.
     command: []
 
+  # --------------------------------------------------------------------------------------------
+  # Setup web UI: status dashboard, pairing wizard, and the AltStore install flow with 2FA entry.
+  # Reachable at http://<this-host>:8099 -- no port mapping, because network_mode: host binds it
+  # straight onto the host.
+  #
+  # SECURITY: the install page accepts an Apple ID password over PLAIN HTTP. On a trusted home LAN
+  # that is a considered trade-off; on anything shared, change the command below to
+  # `--host 127.0.0.1` and reach it through an SSH tunnel instead:
+  #     ssh -L 8099:127.0.0.1:8099 you@this-host
+  # Do NOT put it behind the reverse proxy or a Cloudflare Tunnel -- it must not leave the LAN.
+  # --------------------------------------------------------------------------------------------
+  altserver-web:
+    image: ghcr.io/ben-diehlci/altserver-linux:latest
+    container_name: altserver-web
+    restart: unless-stopped
+    init: true
+
+    # Same host network as altserver, so it sees the same usbmuxd, the same avahi, and can report
+    # on the real _altserver._tcp advertisement rather than a bridged illusion of it.
+    network_mode: host
+
+    depends_on:
+      - anisette
+
+    environment:
+      # The status page checks this endpoint against the client's actual contract.
+      ALTSERVER_ANISETTE_SERVER: http://127.0.0.1:6969
+      # Nothing here fetches the IPA; that is altserver's job.
+      ALTSTORE_SKIP_FETCH: "1"
+
+    volumes:
+      # Shares altserver's data volume so the install flow can see the fetched AltStore.ipa.
+      - altserver-data:/data
+      # Read-only: the UI only reports on pairing, it does not change it.
+      - /var/lib/lockdown:/var/lib/lockdown:ro
+      - /var/run/usbmuxd:/var/run/usbmuxd
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
+      - /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket
+
+    entrypoint: ["python3", "/opt/altserver-web/server.py"]
+    command: ["--host", "0.0.0.0", "--port", "8099"]
+
 volumes:
   # Created automatically on first deploy. `docker volume inspect <stack>_anisette-config` shows
   # where they live on disk if you need to back them up -- and you SHOULD back up anisette-config,
