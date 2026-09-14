@@ -181,6 +181,41 @@ int main(int argc, char *argv[]) {
     
 	signal(SIGPIPE, SIG_IGN);
 
+	// ALTSERVER_ANISETTE_SERVER is read per-request, deep inside FetchAnisetteData(). Without a
+	// check here, a daemon started without it comes up cleanly, advertises itself over Bonjour and
+	// is discovered by the phone -- then fails only when someone first tries to refresh, which is
+	// a long way from the actual mistake (a systemd unit missing Environment=, or `sudo` without
+	// -E dropping it from the environment).
+	//
+	// This deliberately WARNS rather than exiting. Of the six request types the daemon serves, only
+	// AnisetteDataRequest needs an anisette server; PrepareApp, InstallProvisioningProfiles,
+	// RemoveProvisioningProfiles, RemoveApp and EnableUnsignedCodeExecution (AltJIT) all work
+	// without one, and refusing to start would break those.
+	{
+		const char *anisetteServer = getenv("ALTSERVER_ANISETTE_SERVER");
+
+		if (anisetteServer == NULL || *anisetteServer == '\0')
+		{
+			fprintf(stderr,
+				"WARNING: ALTSERVER_ANISETTE_SERVER is not set.\n"
+				"         Signing in with an Apple ID will fail, so installing and refreshing apps\n"
+				"         will not work. In server mode, AltJIT and provisioning profile requests\n"
+				"         still work. Set it to the URL of an anisette server, including the scheme,\n"
+				"         e.g. http://127.0.0.1:6969 -- see --help.\n");
+		}
+		else if (strncmp(anisetteServer, "http://", 7) != 0 && strncmp(anisetteServer, "https://", 8) != 0)
+		{
+			fprintf(stderr,
+				"WARNING: ALTSERVER_ANISETTE_SERVER (\"%s\") has no http:// or https:// scheme.\n"
+				"         It will be rejected when anisette data is first requested. Use a full URL,\n"
+				"         e.g. http://127.0.0.1:6969\n", anisetteServer);
+		}
+		else
+		{
+			printf("Using anisette server: %s\n", anisetteServer);
+		}
+	}
+
 	if (installApp) {
 		odslog("Installing app...");
 		std::shared_ptr<Device> _selectedDevice = std::make_shared<Device>("unknown", udid, Device::Type::All);;
