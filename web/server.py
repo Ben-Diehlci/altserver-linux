@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import status_checks  # noqa: E402
+import pairing  # noqa: E402
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -96,7 +97,7 @@ PAGE = """<!doctype html>
   <div id="checks"></div>
   <footer>
     Refreshes every 30s. Read-only &mdash; this page does not sign in or change anything.
-    Raw JSON at <code>/api/status</code>.
+    Raw JSON at <code>/api/status</code>. &middot; <a href="/pairing">Pairing setup &rarr;</a>
   </footer>
 </div>
 <script>
@@ -133,6 +134,54 @@ load(); setInterval(load, 30000);
 """
 
 
+PAIRING_PAGE = PAGE.replace("<title>AltServer status</title>", "<title>Pair your iPhone</title>")
+
+PAIRING_PAGE = PAIRING_PAGE[:PAIRING_PAGE.index("<body>")] + """<body>
+<div class="wrap">
+  <header>
+    <h1>Pair your iPhone</h1>
+    <div class="meta"><span id="when"></span> &middot; <a href="/">&larr; Status</a></div>
+  </header>
+  <p class="meta" style="margin-top:-.5rem">
+    A USB cable is needed for this once, and only once. Wireless pairing is not supported, but
+    after this step refreshing happens over Wi-Fi and the cable is never needed again.
+  </p>
+  <div id="steps"></div>
+  <footer>Re-checks every 5s while you work. Run the commands shown on the server itself.</footer>
+</div>
+<script>
+function esc(s){ return String(s).replace(/[&<>\"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c])); }
+const PILL = {ok:'ok', todo:'warn', blocked:'fail'};
+async function load(){
+  try{
+    const d = await (await fetch('/api/pairing',{cache:'no-store'})).json();
+    document.getElementById('when').textContent =
+      d.paired ? 'Paired \u2713' : ('Next: ' + (d.next||''));
+    document.getElementById('steps').innerHTML = d.steps.map((s,i) => `
+      <div class="card ${PILL[s.state]||'unknown'}">
+        <div class="row">
+          <span class="pill">${s.state==='ok'?'done':s.state}</span>
+          <span class="name">${i+1}. ${esc(s.title)}</span>
+        </div>
+        ${s.detail ? `<div class="detail">${esc(s.detail)}</div>` : ''}
+        ${s.action ? `<div class="fix"><b>Run on the server:</b><br>
+           <code style="user-select:all">${esc(s.action)}</code></div>` : ''}
+        ${s.note ? `<div class="fix" style="white-space:pre-line">${esc(s.note)}</div>` : ''}
+      </div>`).join('');
+  }catch(e){
+    document.getElementById('steps').innerHTML =
+      '<div class="card fail"><div class="row"><span class="pill">fail</span>' +
+      '<span class="summary">Status service unreachable</span></div></div>';
+  }
+}
+load(); setInterval(load, 5000);
+</script>
+</body>
+</html>
+"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "AltServerStatus/0.1"
 
@@ -149,6 +198,16 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             self._send(200, PAGE, "text/html; charset=utf-8")
+        elif path == "/pairing":
+            self._send(200, PAIRING_PAGE, "text/html; charset=utf-8")
+        elif path == "/api/pairing":
+            try:
+                data = pairing.diagnose()
+            except Exception as exc:
+                data = {"steps": [{"title": "Pairing check failed", "state": "blocked",
+                                   "detail": str(exc), "action": "", "note": ""}],
+                        "udids": [], "paired": False, "next": "Pairing check failed"}
+            self._send(200, json.dumps(data), "application/json")
         elif path == "/api/status":
             try:
                 data = status_checks.run_all()
