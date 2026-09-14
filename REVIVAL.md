@@ -83,6 +83,7 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | `6cd382a` | **node24 bump**, part 1: checkout v4→v7, setup-qemu v3→v4, login-action v3→v4, gh-release v2→v3. |
 | `8494e36` | **node24 bump**, part 2: third-party uploader → `actions/upload-artifact@v7`, download-artifact v4→v8, matrix restructured to carry an `arch` label. |
 | `a266861` | **corecrypto**, 2 of 3 layers. Does *not* close #111. |
+| `<pending>` | **mDNS advertisement failure made loud.** Both failure paths verified; success path NOT verified locally — no working avahi in the build container. Must be confirmed on the real host. |
 | `b885501` | **anisette error handling** rewritten; `mktime`→`timegm`; `ResetProvisioning` Windows-path bug. Closes #104. |
 
 ### Verified facts worth not re-deriving
@@ -277,12 +278,7 @@ Consequences, and they are exactly the wrong shape for a headless box:
    `network_mode: host` and an absolute bind mount for `AltServerData`. Pairs with item 6.
    Remember `./AltServerData` is a **relative** path, so `WorkingDirectory` / the container
    workdir matters.
-8. **Make mDNS advertisement failure loud.** `dnssd_loader.cpp` never waits on the forked
-   python3 child and always returns success, so an unadvertised server is silently invisible —
-   the single worst failure mode for unattended operation. Fix: `waitpid` with a short timeout,
-   or at minimum check the child did not exit immediately, and log unmistakably on failure.
-   Small patch, high value for this deployment.
-9. **getopt hygiene** (`src/AltServerMain.cpp`). `case 'a'` has no `break` and falls through to
+8. **getopt hygiene** (`src/AltServerMain.cpp`). `case 'a'` has no `break` and falls through to
    `case 'p'`, so `-a` sets *both* appleID and password; `-h` is documented and handled at
    `case 'h'` but absent from the optstring `"u:i:a:p:P:d"`, so it is unreachable; five `char*`
    are uninitialised. All real UB — but fix as hygiene and claim no issue: across 16 pasted
