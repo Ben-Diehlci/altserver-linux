@@ -7,14 +7,28 @@
 # Nginx Proxy Manager and do NOT give them a Cloudflare Tunnel route.
 #
 # ----------------------------------------------------------------------------------------------
-# ONE-TIME PREP ON THE HOST, before deploying:
+# NO HOST PREP NEEDED. This uses NAMED VOLUMES, which Docker creates on first deploy -- and when a
+# named volume is first mounted over a path that already exists in the image, Docker copies that
+# path's contents AND ITS OWNERSHIP into the volume. The anisette image ships
+# /home/Alcoholic/.config/anisette-v3 owned by uid 1000, so the volume inherits that and the
+# chown a bind mount would have required is unnecessary.
 #
-#   sudo mkdir -p /opt/stacks/anisette/config /opt/stacks/altserver/data
-#   sudo chown 1000:1000 /opt/stacks/anisette/config     # anisette runs as uid 1000
-#   sudo chmod 700 /opt/stacks/anisette/config
+# The one genuine prerequisite is outside Docker's reach: the phone must have been paired over USB
+# once (BOOTSTRAP.md Phase 3) so /var/lib/lockdown holds a pairing record. Wireless pairing is not
+# possible in this build.
 #
-# The phone must also have been paired over USB once (see BOOTSTRAP.md Phase 3) so that
-# /var/lib/lockdown holds a pairing record. Wireless pairing is not possible in this build.
+# MIGRATING AN EXISTING BIND-MOUNT DEPLOYMENT: if you already have a provisioned identity at
+# /opt/stacks/anisette/config, do NOT just redeploy -- the new volume starts empty and the server
+# will mint a new machine, which costs you a 2FA prompt on every refresh. Copy it across first:
+#
+#   docker compose stop anisette
+#   docker run --rm -v /opt/stacks/anisette/config:/from \
+#                   -v altserver_anisette-config:/to alpine \
+#                   sh -c 'cp -a /from/. /to/'
+#   docker compose up -d anisette
+#   curl -sS http://127.0.0.1:6969/ | grep -o '"X-Mme-Device-Id":"[^"]*"'   # must be UNCHANGED
+#
+# The volume name is <stack>_anisette-config; adjust the prefix to your stack's name.
 # ----------------------------------------------------------------------------------------------
 
 services:
@@ -40,7 +54,10 @@ services:
       # The machine identity. Mount this DIRECTORY, never its lib/ subdirectory — the upstream
       # README says lib/, which persists only the Apple .so cache and loses device.json + adi.pb
       # on every stack update. That is issue #86.
-      - /opt/stacks/anisette/config:/home/Alcoholic/.config/anisette-v3
+      # Swap for an absolute bind mount if you prefer an inspectable host path:
+      #   - /opt/stacks/anisette/config:/home/Alcoholic/.config/anisette-v3
+      # ...but then you must mkdir it and chown it to 1000:1000 first.
+      - anisette-config:/home/Alcoholic/.config/anisette-v3
 
   # --------------------------------------------------------------------------------------------
   # AltServer itself.
@@ -84,7 +101,10 @@ services:
     volumes:
       # AltServerData. The app writes to the RELATIVE path ./AltServerData against its working
       # directory, which the image sets to /data — so this mount is what makes it persist.
-      - /opt/stacks/altserver/data:/data
+      # Also where to put AltStore.ipa for the first-time install.
+      # Swap for a bind mount if you want to drop files in from the host easily:
+      #   - /opt/stacks/altserver/data:/data
+      - altserver-data:/data
 
       # The pairing record from the one-time USB pairing. Read-write: libimobiledevice may
       # refresh it. Losing this means fetching the cable again.
@@ -104,3 +124,10 @@ services:
     #   AltServer -u "$ALTSERVER_UDID" -a "$ALTSERVER_APPLE_ID" -p "$ALTSERVER_APPLE_PASSWORD" /data/AltStore.ipa
     # It needs an interactive console because the 2FA code is read from stdin.
     command: []
+
+volumes:
+  # Created automatically on first deploy. `docker volume inspect <stack>_anisette-config` shows
+  # where they live on disk if you need to back them up -- and you SHOULD back up anisette-config,
+  # since it holds the Apple machine identity. Losing it means re-provisioning and a fresh 2FA.
+  anisette-config:
+  altserver-data:
