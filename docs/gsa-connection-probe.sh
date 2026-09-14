@@ -24,6 +24,13 @@
 #                                     upstream drift before spending more Apple attempts.
 #   Anything 503                   -> The client-info block, not this. Check X-MMe-Client-Info.
 #
+# ABOUT -k / --insecure. It is REQUIRED here and is not a shortcut. gsa.apple.com is served with
+# a certificate issued by "Apple Server Authentication CA" -- Apple's own private CA, which is in
+# no public trust store, so curl rejects the chain as self-signed and never sends the request.
+# AltServer hits the same wall and handles it the same way: AppleAPI.cpp sets
+# config.set_validate_certificates(false) for exactly this client. Validating here would measure
+# TLS trust rather than the connection behaviour we are testing.
+#
 # Usage:  bash docs/gsa-connection-probe.sh
 # Needs:  curl. Nothing else, and no credentials.
 
@@ -74,11 +81,13 @@ FMT='  request %{url_effective}\n    HTTP %{http_code}   new-connections=%{num_c
 echo "GrandSlam connection-reuse probe"
 echo "  endpoint : $ENDPOINT"
 echo "  user     : $PROBE_USER  (nonexistent -- no account is touched, no password is sent)"
+echo "  tls      : validation disabled (-k), because Apple serves this endpoint from a private CA"
+echo "             that is in no public trust store. AltServer does the same. Not a shortcut."
 echo
 
 echo "== Run A: two requests, ONE curl invocation (socket REUSED) =="
 echo "   expect new-connections=1 then 0. A 429 on the second is the failure we are chasing."
-curl -sS -o /dev/null -w "$FMT" \
+curl -k -sS -o /dev/null -w "$FMT" \
   -X POST "$ENDPOINT" \
   -H "Content-Type: text/x-xml-plist" \
   -H "Accept: */*" \
@@ -86,7 +95,7 @@ curl -sS -o /dev/null -w "$FMT" \
   -H "X-Mme-Client-Info: $CLIENT_INFO" \
   --data-binary "@$BODY_FILE" \
   --next \
-  -sS -o /dev/null -w "$FMT" \
+  -k -sS -o /dev/null -w "$FMT" \
   -X POST "$ENDPOINT" \
   -H "Content-Type: text/x-xml-plist" \
   -H "Accept: */*" \
@@ -98,7 +107,7 @@ echo
 echo "== Run B: two requests, SEPARATE connections (Connection: close) =="
 echo "   expect new-connections=1 both times."
 for i in 1 2; do
-  curl -sS -o /dev/null -w "$FMT" \
+  curl -k -sS -o /dev/null -w "$FMT" \
     -X POST "$ENDPOINT" \
     -H "Content-Type: text/x-xml-plist" \
     -H "Accept: */*" \
@@ -115,3 +124,4 @@ echo "  A=200,429 and B=200,200  -> connection reuse CONFIRMED; the gsaClient() 
 echo "  A=200,200 and B=200,200  -> REFUTED; the fault is the o=complete body, not the socket"
 echo "  both runs 429 on req 2   -> per-IP or per-identity; do not spend more Apple attempts yet"
 echo "  any 503                  -> client-info block instead; check X-MMe-Client-Info"
+echo "  HTTP 000 everywhere      -> TLS or network, not Apple. Re-check that -k is present."
