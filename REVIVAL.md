@@ -180,11 +180,23 @@ Consequences for this project:
   stops being hypothetical, and a purpose-built AltServer container for the Portainer stack
   becomes the natural deliverable — see item 8.
 
-**OPEN QUESTION, and it gates everything:** is the Ubuntu VM's NIC **bridged** onto the same L2
-segment as the phone's Wi-Fi, or NAT'd behind Proxmox? mDNS/Bonjour is link-local and does not
-cross subnets or VLANs. If the VM is NAT'd, or the phone is on a guest/IoT VLAN, the device will
-never discover `_altserver._tcp` no matter how correct everything else is. This is cheap to
-check and would invalidate a lot of downstream work, so check it first.
+**Network topology — RESOLVED.** The Ubuntu VM is **bridged onto the same network as the phone**;
+the operator reaches server services by IP from the phone while at home. So there is no NAT or
+VLAN boundary between them and the mDNS prerequisite is satisfied.
+
+Residual risk, small but worth one command to rule out: reaching a host by IP proves L3
+routability, whereas mDNS needs **multicast on the same broadcast domain**. A Wi-Fi AP with
+client/AP isolation or aggressive IGMP snooping can pass ordinary TCP while dropping multicast
+between wireless and wired hosts. Confirm the multicast path specifically by checking that the
+server can see the phone's *own* Bonjour advertisements:
+
+```bash
+sudo apt install -y avahi-utils
+avahi-browse -art | grep -iE "iphone|ipad|_companion-link|_rdlink|_airplay|_raop"
+```
+
+If the phone appears there, `_altserver._tcp` will reach it too. If it does not, fix multicast
+before touching anything else — nothing downstream can work without it.
 
 ### Next up
 
