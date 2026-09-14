@@ -106,6 +106,8 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | `64d7441` | Two status checks that reported nonsense: the process check was a PID-namespace false negative, and the clock check used `timedatectl`, which cannot work in a container. |
 | `af2be1e` | **mDNS from a container needs AppArmor rules.** Tested profile + installer; see below. |
 | `1bd0183` | README rewritten for the current state, leading with an honest status table. |
+| `2a2e99e` | **JS syntax error fixed** — a literal newline in a string literal was killing every page's script block. All three pages now `node --check`ed. |
+| `b98a01e` | **`paths:` filter fixed** — `web/**` changes were not rebuilding the image, so five commits of fixes never shipped. |
 
 ### CONFIRMED 2026-09-14: the Apple GSA client-info block is real
 
@@ -223,6 +225,45 @@ denial in `dmesg`; under `altserver-mdns` it reaches the daemon with **zero** de
 as root, and `security_opt` only *selects* an already-loaded profile. That is a property of
 AppArmor, not a packaging gap — the only alternative would be a privileged init container mounting
 `/sys/kernel/security`, which is a far larger hole than the one being closed.
+
+### CONFIRMED 2026-09-14: a stale image made fixed bugs keep reproducing
+
+`build_image.yml`'s `paths:` filter listed only the C++ build inputs, so **`web/**` changes never
+triggered an image rebuild**. Five consecutive commits of web UI fixes sat in the repo without
+ever reaching a published image, while CI stayed green and deploys succeeded.
+
+The symptom was the worst available: known-fixed bugs still reproducing in production, with
+nothing anywhere indicating the artifact was stale. It sent us back to debug code that was already
+correct.
+
+**Two rules, both learned the expensive way:**
+
+1. A `paths:` filter must list everything that goes *into* the artifact, not just what compiles.
+   `web/` is `COPY`-ed into the image; so is `docker-entrypoint.sh`. `upstream_repo` decides what
+   gets compiled at all.
+2. **"Does the deployed thing actually contain the fix?" comes before "why didn't the fix work?"**
+   One command settles it:
+   ```bash
+   docker inspect altserver-web --format '{{.Image}}'
+   docker exec altserver-web grep -c "<something from the fix>" /opt/altserver-web/server.py
+   ```
+   Note `:latest` does not re-pull on its own — a Portainer stack update needs **Re-pull image**
+   ticked, so a deploy can silently reuse a months-old layer.
+
+### CONFIRMED 2026-09-14: one bad JS escape broke every page
+
+The install page did nothing: the form would not submit, no log appeared, the state stayed on its
+placeholder, and the UDID never filled in. The backend was provably fine the whole time — `curl`
+against `/api/install/start` returned correct validation errors, and no exception ever reached the
+container log.
+
+An escaped newline had collapsed into a **literal newline inside a JavaScript string literal**
+when the page was generated, which is a syntax error and kills the entire `<script>` block. Every
+symptom followed from that one line, which is why it presented as several unrelated faults.
+
+Now built with `String.fromCharCode(10)`, which nothing between Python and the browser can mangle.
+**All three pages are checked with `node --check` now** — `installer.py` had been well tested
+against a mock, but the thing the browser actually runs had never been parsed by anything.
 
 ### Other things learned the hard way
 
