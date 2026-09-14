@@ -15,10 +15,16 @@ on:
     paths:
       - 'Dockerfile'
       - '.dockerignore'
+      - 'docker-entrypoint.sh'
+      # The web UI is COPIED into the image, so changes to it must rebuild it. Omitting this
+      # meant five commits of web fixes silently never reached a published image, and the
+      # deployed stack kept serving known-broken code with no indication anything was stale.
+      - 'web/**'
       - 'src/**'
       - 'shims/**'
       - 'makefiles/**'
       - 'Makefile'
+      - 'upstream_repo'
       - '.github/workflows/build_image.yml'
   workflow_dispatch:
 
