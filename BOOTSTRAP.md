@@ -41,8 +41,12 @@ Multicast is confirmed working. Remaining:
 
 ```bash
 sudo apt install -y usbmuxd libimobiledevice-utils
-sudo systemctl enable --now usbmuxd
 ```
+
+Do **not** `systemctl enable usbmuxd` on Ubuntu — it is udev-activated and has no `[Install]`
+section, so `enable` prints a confusing "unit files have no installation config" message. It
+starts on its own when an iOS device is plugged in. Confirm it is working in Phase 3, by whether
+`idevice_id -l` sees the phone, not by whether the unit is enabled.
 
 Re-confirm the mDNS chain, since a silent failure here makes the server invisible later:
 
