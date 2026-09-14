@@ -516,6 +516,11 @@ much of this session was spent on silent failures — visible health, i.e. is th
 is the anisette server reachable, when did the last successful refresh happen, and when do the
 current certificates expire.
 
+9. **Accept the Apple ID password from somewhere other than argv.** `-p` puts the password in
+   `ps` output for the life of the process and in shell history. An `ALTSERVER_APPLE_PASSWORD`
+   env var, or reading from stdin when `-p` is absent, would fix it. Small, and it matters more
+   once this runs unattended, where the password has to live somewhere anyway.
+
 ### Explicitly not doing
 
 - **PR #98 (CMake rewrite).** Author wrote "doesn't 100% work" in 2023 and never returned; keyed

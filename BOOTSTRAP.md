@@ -248,15 +248,25 @@ sudo tar czf ~/lockdown-backup.tgz /var/lib/lockdown/
 Get `AltStore.ipa` from <https://altstore.io> onto the VM. Then, **in an interactive terminal** —
 2FA is read from stdin, which does not exist under systemd:
 
+Do **not** paste angle-bracket placeholders into the shell — bash reads `<` as input redirection
+and fails with `No such file or directory`. Prompt for the values instead, which also keeps the
+Apple ID password out of `~/.bash_history`:
+
 ```bash
+ls -la ~/AltStore.ipa                       # confirm the IPA is actually there first
+
 export ALTSERVER_ANISETTE_SERVER=http://127.0.0.1:6969
 
-./AltServer-x86_64 \
-  -u <UDID-from-phase-3> \
-  -a <appleid@example.com> \
-  -p '<password>' \
-  AltStore.ipa
+read -rp  "UDID: "     UDID
+read -rp  "Apple ID: " APPLEID
+read -rsp "Password: " APPLEPW; echo
+
+~/AltServer-x86_64 -u "$UDID" -a "$APPLEID" -p "$APPLEPW" ~/AltStore.ipa
 ```
+
+> The password is still visible in `ps` for the duration of the run, because the binary accepts it
+> only as a command-line argument. Harmless on a single-user homelab VM, but it is a real interface
+> flaw — see TODO 9 in [REVIVAL.md](REVIVAL.md).
 
 Flag order no longer matters (the `-a` fallthrough is fixed), but keep `-u -a -p` anyway. You will
 be prompted for a **2FA code** — type it at the prompt.
