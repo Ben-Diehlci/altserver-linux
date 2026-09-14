@@ -326,6 +326,31 @@ remainder. Watch the spelling: `USBMUXD_SOCKET_ADRESS` with one D is silently ig
 The status page now checks BOTH transports separately and reports which one found the device.
 Reporting them together would hide the one failure that matters: USB fine, wireless dead.
 
+### CONFIRMED 2026-09-14: the runtime base must be trixie, not bookworm
+
+Adding netmuxd failed CI immediately:
+
+```
+/usr/local/bin/netmuxd: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found
+```
+
+netmuxd's release binaries are dynamically linked and need glibc >= 2.38. bookworm ships 2.36;
+trixie ships 2.41. **The build-time `netmuxd --about` check is what caught this** -- without it the
+image would have published successfully and netmuxd would have crash-looped in the stack, which
+reads as "wireless is broken" rather than "the binary cannot start". Same value as the
+`libdns_sd.so` load check, and the same reason to keep both.
+
+Bumping the base is safe here because **AltServer is linked `-static`**: the runtime image's libc
+is irrelevant to it. Only python3, libimobiledevice-utils, avahi-utils and netmuxd are affected.
+
+Verified locally on trixie BEFORE pushing, rather than push-and-see -- both packages and binary:
+
+```
+PASS: libdns_sd.so loads
+ldd (Debian GLIBC 2.41-12+deb13u3) 2.41
+netmuxd v0.4.2 - a network multiplexer          <- v0.4.3 tag, unbumped version string. Cosmetic.
+```
+
 ### Other things learned the hard way
 
 - **`gsa.apple.com` is served from `Apple Server Authentication CA`**, Apple's own private CA,
