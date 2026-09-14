@@ -8,8 +8,18 @@ RUN mkdir /buildenv
 
 WORKDIR /buildenv
 
-RUN curl -JO 'https://developer.apple.com/file/?file=security&agree=Yes' -H 'Referer: https://developer.apple.com/security/' && unzip corecrypto.zip
+RUN curl -JO 'https://developer.apple.com/file/?file=security&agree=Yes' -H 'Referer: https://developer.apple.com/security/' \
+ && unzip -q corecrypto.zip \
+ && rm -rf __MACOSX \
+ && if [ ! -d corecrypto ]; then mv corecrypto-* corecrypto; fi \
+ && test -f corecrypto/CMakeLists.txt
 WORKDIR /buildenv/corecrypto
+
+# Apple's corecrypto distribution include()s a code-coverage helper it does not ship:
+# scripts/ contains only the testvector converters. CODE_COVERAGE is off by default, so
+# this include is the only reference that actually breaks configure. Cf. upstream PR #85.
+RUN sed -i -E 's|^include\(scripts/code-coverage\.cmake\)|#&|' CMakeLists.txt
+
 RUN mkdir build; cd build; CC=clang CXX=clang++ cmake ..;
 WORKDIR /buildenv/corecrypto/build
 RUN sed -i -E 's|^(all: CMakeFiles\/corecrypto_perf)|#\1|' CMakeFiles/Makefile2; sed -i -E 's|^(all: CMakeFiles\/corecrypto_test)|#\1|' CMakeFiles/Makefile2
