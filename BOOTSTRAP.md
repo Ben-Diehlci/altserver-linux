@@ -25,18 +25,40 @@ Then on GitHub: **Actions → Build AltServer →** newest run → **Artifacts �
 That downloads to your Mac's browser. GitHub artifact URLs need an authenticated API call even on
 a public repo, so fetching it directly on the VM with `curl` will not work — copy it across:
 
+Safari auto-expands downloads ("Open safe files after downloading"), so you will most likely end
+up with the bare binary `AltServer-x86_64` rather than `AltServer-amd64.zip`. Either is fine —
+copy whichever you actually got:
+
 ```bash
-# on the Mac
+# on the Mac -- if Safari already expanded it
+scp ~/Downloads/AltServer-x86_64 astrid@192.168.5.16:~/
+
+# or, if you got the zip
 scp ~/Downloads/AltServer-amd64.zip astrid@192.168.5.16:~/
 ```
 
 ```bash
 # in the VM's SSH session
-sudo apt install -y unzip
-unzip ~/AltServer-amd64.zip
-chmod +x AltServer-x86_64        # artifact upload strips the executable bit; without this: status=203/EXEC
-./AltServer-x86_64 --help        # sanity check
+sudo apt install -y unzip                 # only if you copied the zip
+unzip ~/AltServer-amd64.zip               # only if you copied the zip
+chmod +x ~/AltServer-x86_64               # ALWAYS -- artifact upload strips the executable bit,
+                                          # and scp does not reliably preserve it either.
+                                          # Without it, systemd fails with status=203/EXEC
+~/AltServer-x86_64 --help
 ```
+
+### Confirm you have the right binary, not the pre-fix one
+
+The artifact from a run that predates the fixes looks identical. Check the strings:
+
+```bash
+grep -c "No anisette server is configured" ~/AltServer-x86_64   # expect >= 1
+grep -c "armconverter.com/anisette" ~/AltServer-x86_64          # expect 0 -- the dead default
+```
+
+Expect the first to be non-zero and the second to be **zero**. `file` will also report
+`statically linked, with debug_info, not stripped` at roughly 52 MB — the size is the `-g` debug
+info from the Makefile, not a problem.
 
 The binary is named for the gcc triple (`x86_64`), the artifact for the matrix label (`amd64`).
 
