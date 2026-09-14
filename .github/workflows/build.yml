@@ -73,10 +73,18 @@ jobs:
   build:
     needs: [check]
     strategy:
+      # Do not cancel the other legs when one fails: the emulated architectures are the most
+      # likely to break, and killing a good amd64 build because armv7 died wastes the useful one.
+      fail-fast: false
       matrix:
         # `include:`-only matrix: still exactly 4 legs, but each now carries a short `arch`
         # label. actions/upload-artifact rejects '/' and ':' in artifact names, so the image
         # reference cannot be used as the name -- hence this label.
+        #
+        # armv7, aarch64 and i386 run under QEMU emulation on x86 runners and take far longer
+        # than amd64. Artifacts are published per-job as each finishes, so a slow leg never
+        # blocks downloading a fast one -- but `release` waits for all four via `needs:`, which
+        # is correct for a tagged release and merely slow for day-to-day iteration.
         include:
           - arch: armv7
             builder: ghcr.io/nyamisty/altserver_builder_alpine_armv7
