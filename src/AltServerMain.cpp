@@ -88,6 +88,13 @@ void print_help() {
 			"          There is no default. The server that used to be hardcoded here has been\n"
 			"          returning HTTP 502 since 2026-09, and pointing every user at one shared\n"
 			"          anisette identity can get Apple IDs locked. See the README.\n"
+			"  - ALTSERVER_UDID / ALTSERVER_APPLE_ID / ALTSERVER_APPLE_PASSWORD:\n"
+			"          Alternatives to -u / -a / -p. A command-line flag wins if both are given.\n"
+			"          Prefer these when running unattended or in a container: a password passed\n"
+			"          as -p is visible in `ps` to every user on the host, and lands in shell history.\n"
+			"  - ALTSERVER_NO_CLIENTINFO_SANITIZE: set to 1 to stop rewriting com.apple.dt.Xcode\n"
+			"          to com.apple.akd in X-MMe-Client-Info. Only useful for diagnosing sign-in\n"
+			"          failures; leave unset normally.\n"
 			"  - ALTSERVER_NO_SUBSCRIBE: (*unused*) Please enable this for usbmuxd server that do not correctly usbmuxd_listen interfaces\n"
 			);
 }
@@ -177,15 +184,32 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
+	// Fall back to the environment when a flag is absent. This is what makes unattended and
+	// containerised operation possible at all: a detached container has no argv to type into,
+	// and -p places the Apple ID password in `ps` output for every user on the host and in shell
+	// history. An env var (or a Docker secret sourced into one) is strictly better on both counts.
+	// Precedence is flag > environment, so existing command lines keep working unchanged.
+	{
+		const char *envUdid = getenv("ALTSERVER_UDID");
+		const char *envAppleID = getenv("ALTSERVER_APPLE_ID");
+		const char *envPassword = getenv("ALTSERVER_APPLE_PASSWORD");
+
+		if (udid == NULL && envUdid != NULL && *envUdid != '\0') { udid = (char *)envUdid; }
+		if (appleID == NULL && envAppleID != NULL && *envAppleID != '\0') { appleID = (char *)envAppleID; }
+		if (password == NULL && envPassword != NULL && *envPassword != '\0') { password = (char *)envPassword; }
+	}
+
 	if (installApp && (udid == NULL || appleID == NULL || password == NULL))
 	{
 		fprintf(stderr,
-			"ERROR: installing an IPA requires -u/--udid, -a/--appleID and -p/--password.\n"
+			"ERROR: installing an IPA requires a UDID, an Apple ID and a password.\n"
 			"       Missing:%s%s%s\n"
+			"       Supply them as -u/--udid, -a/--appleID, -p/--password, or as the environment\n"
+			"       variables ALTSERVER_UDID, ALTSERVER_APPLE_ID and ALTSERVER_APPLE_PASSWORD.\n"
 			"       Run with no IPA argument to start in server (daemon) mode instead.\n",
-			udid == NULL ? " --udid" : "",
-			appleID == NULL ? " --appleID" : "",
-			password == NULL ? " --password" : "");
+			udid == NULL ? " UDID" : "",
+			appleID == NULL ? " AppleID" : "",
+			password == NULL ? " password" : "");
 		return 1;
 	}
 
