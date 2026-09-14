@@ -290,6 +290,18 @@ breaks the premise soonest, not by how interesting the code is.
 Items A and C are deployment/config work rather than patches, and both need a real device to
 confirm. B is a small patch. D is a substantial one. None are blocked by anything already done.
 
+### Bootstrap progress
+
+- **Phase 0 — binary: DONE.** `AltServer-x86_64` from a green CI run on `8997649`, verified by
+  string check (contains the new anisette text; the dead armconverter default is absent).
+- **Phase 1 — host prereqs: DONE.** avahi-daemon, avahi-utils, libavahi-compat-libdnssd-dev,
+  usbmuxd, libimobiledevice-utils. `CDLL('libdns_sd.so')` loads.
+- **Phase 3 — USB pairing: DONE.** Proxmox passthrough worked; `idevicepair validate` returns
+  SUCCESS and `/var/lib/lockdown/` is backed up with BOTH the per-device plist and
+  `SystemConfiguration.plist`. Note: validation fails with "a passcode is set" unless the device
+  is unlocked at the time — expected, and it will matter again if re-pairing.
+- **Phase 2 — anisette: OUTSTANDING.** The only remaining gate before the install.
+
 ### Confirmed deployment facts
 
 Target device runs **iOS 26.x** → #131 / the `upstream_repo` bump is required.
