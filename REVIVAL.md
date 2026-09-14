@@ -107,12 +107,40 @@ the SECOND GSA request**, which is unaffected by the client-info value, reproduc
 minutes apart, and present on the very first attempt ever made from this machine — so it is not
 cumulative volume throttling.
 
-**Leading hypothesis: the one-time password is being replayed.** `X-Apple-I-MD` is an OTP and
-regenerates on every anisette fetch (observed: two fetches 82 seconds apart returned different
-values). `FetchAnisetteData` is called ONCE and the resulting object is used for BOTH GSA
-requests, so the second request may be presenting an OTP the first already consumed. That would
-explain the stable failure point, and it is fixable in our code by re-fetching between SRP steps.
-Under investigation.
+**CAUSE IDENTIFIED (high confidence): HTTP connection reuse.** An earlier hypothesis recorded
+here — that the one-time password was being replayed — was WRONG and is retracted. Upstream passes
+a single anisette object to init, complete *and* apptokens
+(`AltStore/Dependencies/AltSign/.../ALTAppleAPI+Authentication.swift`, same object at lines 69, 98
+and 165), so one OTP per transaction is the designed and historically working behaviour.
+
+The real mechanism, verified in this tree: `AppleAPI` is a process-wide singleton holding ONE
+`_gsaClient`, built in its constructor (`AppleAPI.cpp:112-117`). `gsaClient()` (`:1013`) returns a
+copy sharing the same cpprestsdk impl and therefore the same asio connection pool, and the second
+GSA request is issued from a `.then()` continuation the instant the first completes — textbook
+keep-alive reuse. No `Connection` header is ever set; the request carries exactly four
+(`AppleAPI+Authentication.cpp:963-968`). Since ~2026-09 Apple's GrandSlam edge refuses the second
+request on a reused connection.
+
+The structural argument is what makes this convincing: between request 1 and request 2, every
+header and all ten anisette values are **byte-identical**. Only the plist body (`o=init` vs
+`o=complete`) and the connection position differ. Anything identical in both cannot by itself
+explain a different outcome, which eliminates the `X-Apple-I-SRL-NO` of `"0"`, the timestamp, the
+User-Agent and the client-info string as sole causes.
+
+Corroborated across the ecosystem: rileytestut/AltSign PR #52 is literally *"Use a separate
+connection for each GrandSlam request"* (shipped in AltServer 1.7.6); nab138/iloader 2.3.3's
+entire release note is *"Disabled reqwest pooling to alleviate http 429 from grandslam"* — on a
+client that **already carried** the akd fix, which is why the akd rewrite *reveals* the 429 rather
+than causing it; iloader #709 places the 429 at the proof/complete request across five Apple IDs
+on five machines, so it is not account-scoped.
+
+**Fixed** in `makefiles/AltSign-build/rewrite_altsign_source.py`: `gsaClient()` now returns a fresh
+client per call. Untested against Apple at time of writing.
+
+Known remaining divergence, NOT the cause: our sanitizer replaces only the bundle-id substring, so
+the wire value is `com.apple.akd/3594.4.19` — akd has never carried an Xcode build number.
+Upstream PR #1790 replaces the whole token with `com.apple.akd/1.0`. Worth tightening separately;
+it is identical in both requests so it cannot explain 200-then-429.
 
 ### Verified facts worth not re-deriving
 
