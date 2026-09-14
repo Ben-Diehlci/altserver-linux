@@ -46,6 +46,7 @@ RUN set -eux; \
         python3 \
         libavahi-compat-libdnssd-dev \
         ca-certificates \
+        curl \
         tzdata; \
     rm -rf /var/lib/apt/lists/*; \
     # Fail the BUILD rather than ship an image that cannot advertise. This is the exact call
@@ -54,6 +55,12 @@ RUN set -eux; \
     echo "libdns_sd.so loads OK"
 
 COPY --from=build /out/AltServer /usr/local/bin/AltServer
+
+# Fetches the current AltStore Classic IPA, resolving the URL from AltStore's own catalogue rather
+# than a hardcoded one -- a pinned URL silently installs an ever-older AltStore.
+COPY web/fetch_altstore.py /usr/local/bin/fetch-altstore
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
+RUN chmod +x /usr/local/bin/fetch-altstore /usr/local/bin/docker-entrypoint
 
 # AltServerApp writes to the RELATIVE path ./AltServerData, resolved against the working
 # directory — so the workdir is load-bearing, not cosmetic. Mount a volume here to persist it.
@@ -68,5 +75,6 @@ ENV ALTSERVER_ANISETTE_SERVER=""
 # a published port cannot help, and Bonjour does not cross a bridge.
 EXPOSE 51820
 
-# No IPA argument = daemon mode. Add one (or docker exec) for a one-time install.
-ENTRYPOINT ["/usr/local/bin/AltServer"]
+# The entrypoint refreshes /data/AltStore.ipa, then execs AltServer with whatever arguments were
+# given. No IPA argument = daemon mode; add one (or docker exec) for a one-time install.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint"]
