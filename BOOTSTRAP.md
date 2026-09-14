@@ -22,15 +22,36 @@ git push origin bd/revival
 ```
 
 Then on GitHub: **Actions → Build AltServer →** newest run → **Artifacts → `AltServer-amd64`**.
-Copy it to the VM, then:
+That downloads to your Mac's browser. GitHub artifact URLs need an authenticated API call even on
+a public repo, so fetching it directly on the VM with `curl` will not work — copy it across:
 
 ```bash
-unzip AltServer-amd64.zip
+# on the Mac
+scp ~/Downloads/AltServer-amd64.zip astrid@192.168.5.16:~/
+```
+
+```bash
+# in the VM's SSH session
+sudo apt install -y unzip
+unzip ~/AltServer-amd64.zip
 chmod +x AltServer-x86_64        # artifact upload strips the executable bit; without this: status=203/EXEC
 ./AltServer-x86_64 --help        # sanity check
 ```
 
 The binary is named for the gcc triple (`x86_64`), the artifact for the matrix label (`amd64`).
+
+### What runs in Portainer and what does not
+
+This host is managed through Portainer, but the split for bootstrap is deliberate:
+
+| Component | Where | Why |
+|---|---|---|
+| **Anisette server** | **Portainer stack** | A long-lived service with persistent state. Belongs in the stack. |
+| **AltServer, for the bootstrap install** | **Plain binary over SSH** | The 2FA code is read from **stdin**. It needs a real interactive terminal for this one run. |
+| **AltServer, as a daemon afterwards** | Portainer stack (Phase 7 / F1) | Once signed in, it no longer needs stdin. |
+
+So Phase 4 is a one-time command typed into an SSH session, not a container. Containerising it is
+future item F1 in [REVIVAL.md](REVIVAL.md), and it depends on solving 2FA entry out-of-band.
 
 ---
 
