@@ -100,74 +100,126 @@ systemctl is-active avahi-daemon
 
 ---
 
-## Phase 2 — Anisette server
+## Phase 2 — Anisette server (Portainer stack)
 
-**This is the one step most likely to cost you an evening.** Run it on the same box, bound to
-loopback, over plain HTTP — that avoids TLS trust entirely, which matters because our client uses
-the default http_client config with certificate verification ON.
+Use [`deploy/anisette-stack.yml`](deploy/anisette-stack.yml) — **dadoum/anisette-v3-server**,
+digest-pinned, loopback-only. It is the only maintained server still serving the legacy v1
+flat-JSON endpoint our client needs, verified by reading the source commit the published image
+was built from.
 
-Run whichever anisette server you choose in Docker with a **named volume for its provisioning
-state**, then verify it against our client's actual contract before going further.
+### ⚠️ The trap: the official README tells you to mount the wrong directory
 
-### The contract our client requires (from `src/AnisetteDataManager.cpp`)
-
-A plain `GET` returning HTTP **200** and a JSON **object** with these ten keys, **every value a
-JSON string** (not a number):
+Every copy of the docs, and every forum post repeating them, says to mount:
 
 ```
-X-Apple-I-MD-M   X-Apple-I-MD   X-Apple-I-MD-LU   X-Apple-I-MD-RINFO   X-Mme-Device-Id
-X-Apple-I-SRL-NO   X-MMe-Client-Info   X-Apple-I-Client-Time   X-Apple-Locale   X-Apple-I-TimeZone
+/home/Alcoholic/.config/anisette-v3/lib/      ← WRONG
 ```
 
-Note the inconsistent capitalisation — `X-MMe-Client-Info` (capital MM) versus `X-Mme-Device-Id`
-(lowercase m). Matching is case-sensitive.
+`lib/` holds **only** the two Apple `.so` files downloaded at first run. The machine identity —
+`device.json` and the ADI provisioning blob — lives one level **up**. Verified in source:
+
+```
+59:  configurationPath = expandTilde("~/.config/anisette-v3");
+95:  libraryPath = configurationPath.buildPath("lib");      // just the .so cache
+134: v1Device = new Device(configurationPath.buildPath("device.json"));
+136: v1Adi.provisioningPath = configurationPath;            // identity lives HERE
+```
+
+Mount `lib/` and the identity stays on the container's writable layer, so **every Portainer
+"Update the stack" destroys it**: the server mints a new machine, Apple demands 2FA, and
+unattended refresh dies silently. That is issue #86, straight out of the official docs.
+
+### Prep (before deploying)
+
+The container runs as **uid 1000**, and a bind mount inherits the *host* directory's ownership
+(`root:root`), so without this it cannot write and dies with `FileException … Permission denied`:
 
 ```bash
-curl -s -H 'User-Agent: Xcode' http://127.0.0.1:6969 | jq 'map_values(type)'
+sudo mkdir -p /opt/stacks/anisette/config
+sudo chown 1000:1000 /opt/stacks/anisette/config
+sudo chmod 700 /opt/stacks/anisette/config
+timedatectl        # must say: System clock synchronized: yes
 ```
 
-Every one of the ten must read `"string"`. A server emitting `X-Apple-I-MD-RINFO` as a *number* is
-a known real-world variant — and it is the one field parsed with `std::atoi`, which returns 0
-silently rather than erroring, producing an opaque `-36607` later.
+### Deploy
 
-### Verify its identity survives a restart
+Portainer → **Stacks → Add stack → Web editor**, paste `deploy/anisette-stack.yml`, Deploy.
 
-Skip this and you may hit a 2FA prompt on every refresh, which unattended operation can never
-answer:
+First start downloads the Apple Music APK and provisions against Apple — expect a few minutes,
+ending in `Machine creation done!` then `Provisioning done!`.
+
+### Two settings that are load-bearing, and why
+
+- **`TZ: UTC` — do not copy `TZ=America/New_York` from your Plex/Immich/AdGuard stacks.** The
+  server stamps `X-Apple-I-Client-Time` from *local* wall-clock time and then appends a literal
+  `Z`. Under any other TZ it sends Apple a timestamp wrong by your UTC offset while claiming to be
+  UTC — well-formed, contract-passing, and silently wrong.
+- **The healthcheck hits `/v3/client_info`, never `/`.** The v1 route at `/` performs *real*
+  provisioning against Apple when the machine is not yet provisioned, so polling `/` would hammer
+  Apple's endpoint exactly when your identity volume has gone missing. If the container reports
+  unhealthy immediately, the image may lack `curl` — just delete the healthcheck block.
+
+### Verify (in order — each catches something the next assumes)
 
 ```bash
-curl -s http://127.0.0.1:6969 > /tmp/a1.json
-docker restart <anisette-container>
-sleep 5
-curl -s http://127.0.0.1:6969 > /tmp/a2.json
+docker exec anisette id                       # expect uid=1000(Alcoholic); the mount depends on it
 
-# Guard FIRST: jq -r on an empty file prints an empty string and exits 0, so without this
-# the comparison below happily reports every field "stable" when the server returned nothing.
-for f in /tmp/a1.json /tmp/a2.json; do
-  [ -s "$f" ] || { echo "FAIL: $f is EMPTY -- the server returned nothing. Fix that first."; exit 1; }
-  jq -e . "$f" >/dev/null 2>&1 || { echo "FAIL: $f is not valid JSON:"; head -c 200 "$f"; exit 1; }
-done
+curl -sS -o /dev/null -w 'HTTP %{http_code}\n' -H 'User-Agent: Xcode' http://127.0.0.1:6969/
 
-for k in X-Apple-I-MD-M X-Apple-I-MD-LU X-Mme-Device-Id X-Apple-I-SRL-NO; do
-  a=$(jq -er ".\"$k\"" /tmp/a1.json 2>/dev/null) || { echo "$k MISSING from first response"; continue; }
-  b=$(jq -er ".\"$k\"" /tmp/a2.json 2>/dev/null) || { echo "$k MISSING from second response"; continue; }
-  [ "$a" = "$b" ] && echo "$k stable" || echo "$k CHANGED -- state is not persisting"
-done
+curl -sS -H 'User-Agent: Xcode' http://127.0.0.1:6969/ | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+req=["X-Apple-I-MD-M","X-Apple-I-MD","X-Apple-I-MD-LU","X-Apple-I-MD-RINFO","X-Mme-Device-Id",
+     "X-Apple-I-SRL-NO","X-MMe-Client-Info","X-Apple-I-Client-Time","X-Apple-Locale","X-Apple-I-TimeZone"]
+bad=[k for k in req if k not in d]
+notstr=[k for k in req if k in d and not isinstance(d[k],str)]
+print("MISSING:",bad or "none")
+print("NOT A STRING:",notstr or "none")
+print("Client-Time:",d.get("X-Apple-I-Client-Time"))
+print("Client-Info:",d.get("X-MMe-Client-Info"))
+print("VERDICT:","PASS" if not bad and not notstr else "FAIL")'
+
+date -u +%Y-%m-%dT%H:%M:%SZ      # must match Client-Time above to within seconds
+
+docker exec anisette ls -la /home/Alcoholic/.config/anisette-v3   # device.json + adi.pb + lib/
+sudo ls -la /opt/stacks/anisette/config                           # same files on the HOST side
+docker diff anisette | grep -iE 'anisette-v3|adi|device'          # expect NOTHING identity-related
+
+sudo ss -lntp | grep 6969        # must be 127.0.0.1:6969, never 0.0.0.0
 ```
 
-> **Check the server answers at all before trusting any of this.** `curl … | jq` prints nothing on
-> an empty response, which looks like a pass at a glance:
-> ```bash
-> curl -s --max-time 5 http://127.0.0.1:6969 | tee /tmp/raw.json | head -c 400
-> echo "bytes: $(wc -c < /tmp/raw.json)"    # 0 bytes means nothing is serving there
-> ```
+**Then the test that actually matters — survive a REDEPLOY, not a restart.** `docker restart`
+keeps the same container and proves nothing; Portainer redeploys destroy and recreate it, which is
+what breaks people. In Portainer: **Stacks → anisette → Editor → Update the stack**, then confirm
+the container ID changed *and* `X-Mme-Device-Id` / `X-Apple-I-MD-LU` did **not**.
+(`X-Apple-I-MD` is a one-time password and *should* differ.)
 
-Those four must be **identical**. `X-Apple-I-MD` is a one-time password and *should* differ.
-If anything changed, find where the ADI blob actually lives and mount that path properly.
+### Back up the identity immediately
 
-**Also: NTP must be right on whichever host runs the anisette server**, not just the AltServer
-host — Linux forwards the anisette server's timestamp verbatim to Apple. Clock skew surfaces as a
-generic `-36607` with nothing pointing at a clock.
+`adi.pb` is rewritten on every request, so copy it while idle:
+
+```bash
+docker stop anisette
+sudo tar czf ~/anisette-identity-$(date +%F).tgz -C /opt/stacks/anisette config
+docker start anisette
+```
+
+Restoring that tarball is the **only** disaster-recovery path. Without it, a lost identity means
+re-provisioning and a fresh 2FA prompt.
+
+### Honest confidence
+
+| Claim | Confidence |
+|---|---|
+| Serves all ten keys as strings, correct casing | **Verified in source** |
+| Identity lives in the parent dir, not `lib/` | **Verified in source** |
+| Published image matches that source | Medium — `:latest` is ~17 months behind; upstream's publish workflow has been failing |
+| This produces a successful Apple sign-in | **Low — unproven.** No one has reported a completed AltServer-Linux sign-in in 2026; every success report predates both the GSA block and iOS 26 |
+
+Rejected alternatives: `dadoum/anisette-server` (crashes at startup, missing libplist),
+`omnisette-server` (its v1 handler removes three of the ten keys),
+`nyamisty/alt_anisette_server` (dead since 2022, implicated in the #88 lockouts), and any public
+shared server (shared identity is the lockout mechanism).
 
 ---
 
