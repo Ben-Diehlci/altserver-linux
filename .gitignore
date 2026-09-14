@@ -1,3 +1,7 @@
 /build
 *.o
 .vscode
+
+# macOS
+.DS_Store
+._*
