@@ -88,6 +88,32 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | `654907a` | **mDNS advertisement failure made loud.** Both failure paths verified; success path NOT verified locally — no working avahi in the build container. Must be confirmed on the real host. |
 | `b885501` | **anisette error handling** rewritten; `mktime`→`timegm`; `ResetProvisioning` Windows-path bug. Closes #104. |
 
+### CONFIRMED 2026-09-14: the Apple GSA client-info block is real
+
+Upstream PR #135 was an unverified third-party claim. It is now reproduced against real Apple
+infrastructure, in both directions, on this deployment:
+
+| `ALTSERVER_NO_CLIENTINFO_SANITIZE` | `X-MMe-Client-Info` sent | First GSA response |
+|---|---|---|
+| unset (sanitizer ON) | `…(com.apple.akd/3594.4.19)` | **200** |
+| `=1` (sanitizer OFF) | `…(com.apple.dt.Xcode/3594.4.19)` | **503** |
+
+So Apple's `gsa.apple.com/grandslam/GsService2` does reject any request carrying the substring
+`com.apple.dt.Xcode`, and the `com.apple.akd` rewrite does get past it. **Keep the sanitizer on.**
+Worth reporting back on PR #135 — the author's curl repro is independently confirmed.
+
+This also cleanly separates two issues that looked like one. The remaining failure is a **429 on
+the SECOND GSA request**, which is unaffected by the client-info value, reproduced identically 28
+minutes apart, and present on the very first attempt ever made from this machine — so it is not
+cumulative volume throttling.
+
+**Leading hypothesis: the one-time password is being replayed.** `X-Apple-I-MD` is an OTP and
+regenerates on every anisette fetch (observed: two fetches 82 seconds apart returned different
+values). `FetchAnisetteData` is called ONCE and the resulting object is used for BOTH GSA
+requests, so the second request may be presenting an OTP the first already consumed. That would
+explain the stable failure point, and it is fixable in our code by re-fetching between SRP steps.
+Under investigation.
+
 ### Verified facts worth not re-deriving
 
 - **The CI failure was an unresolvable action, not the node12 versions.** `uses:` resolution
