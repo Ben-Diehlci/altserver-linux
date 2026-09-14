@@ -284,6 +284,47 @@ Consequences, and they are exactly the wrong shape for a headless box:
    are uninitialised. All real UB — but fix as hygiene and claim no issue: across 16 pasted
    command lines in the issue corpus, nobody wrote `-p` before `-a`.
 
+### Future / research — NOT scheduled, recorded so they are not lost
+
+These are the operator's stated end-goals for the project. Do not start them until the blockers
+above are cleared; they are written down here with enough grounding to be picked up cold.
+
+**F1. Self-contained deploy.** Point Portainer (or any compose-based platform) at the GitHub repo
+and have everything come up with no manual steps beyond entering account credentials. Portainer
+supports deploying a stack straight from a Git repository, so the shape is: a `docker-compose.yml`
+in the repo, an image published to `ghcr.io/ben-diehlci/`, `network_mode: host` for mDNS, a named
+volume or absolute bind mount for `AltServerData` (remember it is a **relative** path), and the
+anisette server as a second service in the same stack. Depends on TODO 6 (registry namespace) and
+7 (the container image). The image must contain `python3` and `libavahi-compat-libdnssd-dev` or
+advertisement fails silently — see the mDNS section above.
+
+Open questions to research: can the anisette server be bundled in the same stack, or does it need
+its own identity/state? What is the minimum set of secrets, and can they be Docker secrets rather
+than plain env vars? Does anything need to run privileged or with host devices for usbmuxd/netmuxd?
+
+**F2. Web interface, replacing the desktop GUI.** On macOS and Windows AltServer has a tray/GUI
+for signing in, entering the 2FA code, choosing a device and triggering a refresh. This port
+replaced all of that with a console implementation injected by
+`makefiles/rewrite_altserver_source.py`. A web UI is the natural equivalent for a headless box.
+
+**This is probably not optional.** `rewrite_altserver_source.py:96` reads the two-factor code with
+`std::cin >> _verificationCode`, i.e. from **stdin**. Under systemd stdin is `/dev/null`, and in
+Docker without `-i` likewise, so 2FA sign-in cannot currently be completed in the target
+deployment at all. `ShowAlert` (`:132`) has the same problem in reverse — it calls `getchar()` and
+would block on an interactive TTY.
+
+So the first research question is narrower than "build a web UI": **how often is 2FA actually
+required?** If Apple's session or token is persisted under `AltServerData` and reused, this is a
+one-time interactive step that could be handled by running the container once with `-it`, and a
+web UI is then a convenience. If a code is needed on every refresh, an out-of-band way to submit
+it is mandatory and the whole unattended premise depends on it. Establish that before designing
+anything.
+
+If built: it should cover sign-in, 2FA entry, device selection, manual refresh, and — given how
+much of this session was spent on silent failures — visible health, i.e. is the server advertising,
+is the anisette server reachable, when did the last successful refresh happen, and when do the
+current certificates expire.
+
 ### Explicitly not doing
 
 - **PR #98 (CMake rewrite).** Author wrote "doesn't 100% work" in 2023 and never returned; keyed
