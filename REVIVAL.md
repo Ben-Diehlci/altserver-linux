@@ -144,11 +144,24 @@ breaks the premise soonest, not by how interesting the code is.
   Covers issues #87, #81, #77, #76, #75, #122, #49, #13 — previously triaged as mostly
   user-error, but for *this* deployment they describe the critical path. Needs a verified,
   written-down working configuration.
-- **D. iOS-version signing compatibility — CONFIRMED IN SCOPE.** The target device runs
-  **iOS 26.x**, so #131 applies: apps install successfully and then crash at launch. This is not
-  hypothetical and cannot be worked around by configuration; it needs the `upstream_repo` bump
-  (item 4 below), which is the largest remaining code task. Note the failure mode is
-  *deceptive* — installation reports success, so everything looks fine until the app is opened.
+- **D. iOS-version signing — BOOTSTRAP ONLY, NOT THE REFRESH PATH.** Corrected 2026-09-14; an
+  earlier entry here wrongly called this the largest task on the critical path.
+  **A 7-day refresh does not re-sign anything and does not transfer an IPA.**
+  `AltStore/Operations/RefreshAppOperation.swift:68` sends exactly one request,
+  `InstallProvisioningProfilesRequest`, which lands at `ClientConnection.cpp:238` →
+  `DeviceManager::InstallProvisioningProfiles` → misagent. `Signer` has exactly **one** call site
+  in the entire server, `AltServerApp.cpp:1453-1454`, inside `InstallApp`, reachable only from
+  the CLI install path. So the 2022-stale signer and #131 block the *first* install on iOS 26.x,
+  not the recurring refresh that is the actual goal.
+  **And #131 is two lines, not a submodule bump.** `upstream_repo/ldid/ldid.cpp:2215` runs
+  `hash.resize(20)` *before* `:2217-2220` captures `alternateCDSHA256 = hash`, so the SHA-256
+  hash-agility attribute carries a hash truncated to 20 bytes and CoreTrust rejects it. Moving the
+  capture above the resize is the whole fix — verified in source here, matching jaakkopalvaila's
+  diagnosis in `open_issue_0131.md`. The competing diagnosis in that thread does not hold against
+  this tree: DER entitlements *are* emitted, CodeDirectory version *is* 0x00020400, and a SHA-256
+  alternate CD *is* present.
+  **Free question that may remove this entirely:** if AltStore is already installed and launching
+  on the phone, the bootstrap is already done and only pairing, anisette and discovery matter.
 
 Items A and C are deployment/config work rather than patches, and both need a real device to
 confirm. B is a small patch. D is a substantial one. None are blocked by anything already done.
@@ -205,6 +218,28 @@ Wi-Fi to the wired VM. Topology is settled. Installing `avahi-utils` also pulled
 `avahi-daemon`, which was NOT previously present and which the compat layer requires — so that
 was a necessary prerequisite obtained by accident.
 
+### Pairing needs a one-time USB connection
+
+A pair record can only be created over USB in this tree. `libraries/libimobiledevice` falls back
+to `lockdownd_pair`, `tools/idevicepair.c:180-182` states wireless pairing is Apple-TV-only, and
+`makefiles/libimobiledevice-build/config.h:99` is `#undef HAVE_WIRELESS_PAIRING`. So the phone
+must physically touch the Linux box once, with a cable, and Trust it. The "no Mac, no PC" premise
+holds for steady-state operation but does not budget for that one cable trip.
+
+### The phone ALSO fails silently — both ends at once
+
+`AltStore/Operations/BackgroundRefreshAppsOperation.swift:60` sets
+`ignoresServerNotFoundError = true`, consumed at `:221-223` to suppress the alert. So a 3am
+background refresh that cannot find the server posts **no notification on the phone** and logs
+nothing on the server — the first symptom is an app that will not open, seven days later.
+
+Useful asymmetry: `AltStore/Intents/App Intents/RefreshAllAppsIntent.swift:187` sets it to
+**false**, so a *manually* triggered refresh does surface the error. Manual refresh is therefore
+the diagnostic tool; background refresh is the thing that goes quiet.
+
+This is the strongest argument for an external watchdog — something that independently checks the
+server is advertising and that a refresh actually succeeded, rather than trusting either end.
+
 ### mDNS advertisement is a SILENT failure — the top risk for unattended operation
 
 `libraries/dnssd_loader/dnssd_loader.cpp` does not link Bonjour. `DNSServiceRegister` builds a
@@ -256,7 +291,10 @@ Consequences, and they are exactly the wrong shape for a headless box:
 
 ### Bigger
 
-4. **Bump `upstream_repo` to 1.7.4.** The only fix for #131 (iOS 26.4 launch crash — `ldid.cpp`
+4. **Fix #131 in place (~2 lines), or bump `upstream_repo` to 1.7.4.** Prefer the two-line fix:
+   move the `alternateCDSHA256 = hash` capture above `hash.resize(20)` in
+   `upstream_repo/ldid/ldid.cpp` (~:2215). Bootstrap-only — see blocker D. The full bump is the
+   heavier alternative (`ldid.cpp`
    truncates a hash to 20 bytes before it becomes the SHA-256 attribute; CoreTrust rejects it).
    `.gitmodules` pins `branch = develop`, whose tip is from 2022, so `--remote` can never reach
    it. Needs a hand-edit: the new `Signer.cpp:277` passes `app.path() + "\\"` and
