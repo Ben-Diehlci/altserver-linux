@@ -300,7 +300,18 @@ confirm. B is a small patch. D is a substantial one. None are blocked by anythin
   SUCCESS and `/var/lib/lockdown/` is backed up with BOTH the per-device plist and
   `SystemConfiguration.plist`. Note: validation fails with "a passcode is set" unless the device
   is unlocked at the time — expected, and it will matter again if re-pairing.
-- **Phase 2 — anisette: OUTSTANDING.** The only remaining gate before the install.
+- **Phase 2 — anisette: DEPLOYED AND VERIFIED** (redeploy-persistence test still pending).
+  `dadoum/anisette-v3-server`, digest-pinned, Portainer stack, `127.0.0.1:6969`.
+  Contract PASS — all ten keys present, all JSON strings, HTTP 200. Clock matches `date -u`.
+  **The volume mapping is proven correct**: `docker diff` shows nothing identity-related on the
+  writable layer, and `adi.pb` + `device.json` + `lib/` are visible host-side at
+  `/opt/stacks/anisette/config`. The `lib/`-only mount the upstream README recommends was avoided.
+  Container runs as uid 1000 = host `youruser`.
+  Quirk: `adi.pb` is mode `---x-w-rwt` (written by Apple's closed-source libCoreADI), so backups
+  need `sudo`.
+  **Confirmed: this server returns `com.apple.dt.Xcode/3594.4.19` in `X-MMe-Client-Info`**, so the
+  PR #135 sanitizer is load-bearing for sign-in. Leave `ALTSERVER_NO_CLIENTINFO_SANITIZE` unset.
+- **Phase 4 — install: NEXT.**
 
 ### Confirmed deployment facts
 
