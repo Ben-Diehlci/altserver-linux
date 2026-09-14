@@ -82,7 +82,7 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | `df570bd` | **CI unbroken.** Dead `gautamkrishnar/keepalive-workflow@master` removed; five actions off retired node12/16; `::set-output` → `$GITHUB_OUTPUT`; per-job `permissions`; `sync_upstream` boolean bug. |
 | `6cd382a` | **node24 bump**, part 1: checkout v4→v7, setup-qemu v3→v4, login-action v3→v4, gh-release v2→v3. |
 | `8494e36` | **node24 bump**, part 2: third-party uploader → `actions/upload-artifact@v7`, download-artifact v4→v8, matrix restructured to carry an `arch` label. |
-| `a266861` | **corecrypto**, 2 of 3 layers. Does *not* close #111. |
+| `a266861` + `15e5be6` | **corecrypto: all 3 layers fixed — CLOSES #111.** Full `make; make install` exits 0. The buildenv image is rebuildable from source again. |
 | `f2540f3` | **Bootstrap blockers cleared:** PR #135 client-info sanitization (with an `ALTSERVER_NO_CLIENTINFO_SANITIZE` escape hatch), and the getopt `-a` fallthrough / uninitialised argv pointers / unreachable `-h`. |
 | `65a5727` | **#131 fixed** via the ldid rewriter: capture the SHA-256 CodeDirectory hash before truncating to 20 bytes. Build-verified; **not** verified on an iOS 26 device. |
 | `654907a` | **mDNS advertisement failure made loud.** Both failure paths verified; success path NOT verified locally — no working avahi in the build container. Must be confirmed on the real host. |
@@ -413,7 +413,7 @@ Consequences, and they are exactly the wrong shape for a headless box:
    `No SOURCES given to target` is a follow-on and the one people notice. Apple's 2024
    distribution moved `ccrng_static.c` to the tree root but left `CoreCryptoSources.cmake:251`
    pointing at the now-nonexistent `corecrypto_static/` subdirectory. Exactly one entry. Fixed by
-   a guarded sed in `buildenv/Dockerfile`; **cmake now configures** (`Generating done`). Also
+   a guarded sed in `buildenv/Dockerfile`; **full `make; make install` exits 0 — #111 CLOSED.** Also
    settled: it is NOT arch-specific — the amd64 CI run fails identically to local aarch64.
    Superseded note: `CORECRYPTO_SRCS` is populated at `CoreCryptoSources.cmake:189` and
    Linux subtracts `CORECRYPTO_EXCLUDE_SRCS` at `CMakeLists.txt:262`, but the list ends up empty
