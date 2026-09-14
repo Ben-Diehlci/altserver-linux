@@ -51,6 +51,13 @@ jobs:
       - name: Generated pages emit valid JavaScript
         run: python3 tests/check_page_js.py
 
+      # A duplicate mapping key shipped because yaml.safe_load keeps the last one instead of
+      # erroring, so the stack only broke at deploy time inside Portainer.
+      - name: Compose files load the way Docker loads them
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 tests/check_compose.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"
