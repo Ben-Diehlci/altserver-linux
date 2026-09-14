@@ -264,6 +264,39 @@ std::shared_ptr<AnisetteData> AnisetteDataManager::FetchAnisetteData()
 	std::string deviceUniqueIdentifier = requireString("X-Mme-Device-Id");
 	std::string deviceSerialNumber = requireString("X-Apple-I-SRL-NO");
 	std::string deviceDescription = requireString("X-MMe-Client-Info");
+
+	// Since ~2026-09 Apple's GSA edge (gsa.apple.com/grandslam/GsService2) rejects with an
+	// immediate HTTP 503 any request whose X-MMe-Client-Info contains "com.apple.dt.Xcode",
+	// independent of version or User-Agent. Anisette servers commonly return exactly that
+	// substring -- upstream AltStore still builds one containing com.apple.dt.Xcode/3594.4.19
+	// as of v2.3.3. Sanitize it here, at the single point where anisette data enters this
+	// program, before it is ever used to build a request header. See upstream PR #135.
+	//
+	// This is an UNVERIFIED third-party claim that we cannot test without a real Apple ID, and
+	// it alters a header Apple sees -- so it is defeatable without a rebuild. If sign-in fails
+	// with the rewrite in place, try ALTSERVER_NO_CLIENTINFO_SANITIZE=1 before assuming the
+	// anisette server is at fault.
+	const char *noSanitize = getenv("ALTSERVER_NO_CLIENTINFO_SANITIZE");
+	if (noSanitize == NULL || *noSanitize == '\0')
+	{
+		const std::string needle = "com.apple.dt.Xcode";
+		const std::string replacement = "com.apple.akd";
+
+		size_t position = 0;
+		bool rewrote = false;
+		while ((position = deviceDescription.find(needle, position)) != std::string::npos)
+		{
+			deviceDescription.replace(position, needle.length(), replacement);
+			position += replacement.length();
+			rewrote = true;
+		}
+
+		if (rewrote)
+		{
+			odslog("Rewrote " << needle << " -> " << replacement << " in X-MMe-Client-Info "
+				"(Apple 503s requests carrying it). Set ALTSERVER_NO_CLIENTINFO_SANITIZE=1 to disable.");
+		}
+	}
 	std::string locale = requireString("X-Apple-Locale");
 	std::string timeZone = requireString("X-Apple-I-TimeZone");
 
