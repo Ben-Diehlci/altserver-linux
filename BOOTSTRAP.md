@@ -40,7 +40,7 @@ Already done on this host: `avahi-daemon`, `avahi-utils`, `libavahi-compat-libdn
 Multicast is confirmed working. Remaining:
 
 ```bash
-sudo apt install -y usbmuxd libimobiledevice-utils
+sudo apt install -y usbmuxd libimobiledevice-utils jq   # jq is used by the Phase 2 checks
 ```
 
 Do **not** `systemctl enable usbmuxd` on Ubuntu — it is udev-activated and has no `[Install]`
