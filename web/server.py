@@ -35,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import status_checks  # noqa: E402
 import pairing  # noqa: E402
+import installer  # noqa: E402
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -97,7 +98,7 @@ PAGE = """<!doctype html>
   <div id="checks"></div>
   <footer>
     Refreshes every 30s. Read-only &mdash; this page does not sign in or change anything.
-    Raw JSON at <code>/api/status</code>. &middot; <a href="/pairing">Pairing setup &rarr;</a>
+    Raw JSON at <code>/api/status</code>. &middot; <a href="/pairing">Pairing &rarr;</a> &middot; <a href="/install">Install AltStore &rarr;</a>
   </footer>
 </div>
 <script>
@@ -182,6 +183,93 @@ load(); setInterval(load, 5000);
 """
 
 
+INSTALL_PAGE = PAGE[:PAGE.index("<body>")].replace(
+    "<title>AltServer status</title>", "<title>Install AltStore</title>") + """<body>
+<div class="wrap">
+  <header>
+    <h1>Install AltStore</h1>
+    <div class="meta"><span id="state">\u2026</span> &middot; <a href="/">&larr; Status</a></div>
+  </header>
+
+  <div class="card" id="warnbox">
+    <div class="row"><span class="pill" style="background:var(--warnbg);color:var(--warn)">note</span>
+    <span class="summary">Your Apple ID password is sent to this page over plain HTTP.</span></div>
+    <div class="fix">Run this on loopback and reach it over an SSH tunnel unless you trust every
+    device on your network. The password is passed to AltServer through the environment, never on
+    a command line, and is not logged or echoed back.</div>
+  </div>
+
+  <form id="f" class="card" onsubmit="return start(event)">
+    <label>Device UDID<br><input name="udid" id="udid" style="width:100%;padding:.45rem;margin:.3rem 0 .7rem"
+      placeholder="from the pairing page" required></label>
+    <label>Apple ID<br><input name="apple_id" type="email" style="width:100%;padding:.45rem;margin:.3rem 0 .7rem" required></label>
+    <label>Password<br><input name="password" type="password" style="width:100%;padding:.45rem;margin:.3rem 0 .7rem" required></label>
+    <button type="submit" style="padding:.5rem 1rem;font-weight:600">Install AltStore</button>
+    <span id="msg" class="meta"></span>
+  </form>
+
+  <form id="tfa" class="card" style="display:none" onsubmit="return sendCode(event)">
+    <div class="row"><span class="pill" style="background:var(--warnbg);color:var(--warn)">2FA</span>
+    <span class="summary">Apple sent a six-digit code to your devices.</span></div>
+    <input id="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+      style="width:9rem;padding:.45rem;margin:.6rem .5rem 0 0;font-size:1.1rem;letter-spacing:.2em" required>
+    <button type="submit" style="padding:.5rem 1rem;font-weight:600">Submit code</button>
+    <span id="tfamsg" class="meta"></span>
+  </form>
+
+  <div class="card" id="logbox" style="display:none">
+    <div class="row"><span class="name">Progress</span></div>
+    <pre id="log" class="detail" style="max-height:22rem;overflow:auto;white-space:pre-wrap"></pre>
+  </div>
+
+  <footer>Credentials and account data are filtered out of the log above before it is shown.</footer>
+</div>
+<script>
+function esc(s){ return String(s).replace(/[&<>\"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c])); }
+async function post(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                             body: JSON.stringify(body)});
+  return r.json();
+}
+async function start(e){
+  e.preventDefault();
+  document.getElementById('msg').textContent = 'starting\u2026';
+  const f = e.target;
+  const d = await post('/api/install/start', {
+    udid: f.udid.value, apple_id: f.apple_id.value, password: f.password.value});
+  document.getElementById('msg').textContent = d.ok ? '' : d.error;
+  f.password.value = '';
+  return false;
+}
+async function sendCode(e){
+  e.preventDefault();
+  const d = await post('/api/install/code', {code: document.getElementById('code').value});
+  document.getElementById('tfamsg').textContent = d.ok ? '' : d.error;
+  if (d.ok) document.getElementById('code').value = '';
+  return false;
+}
+async function poll(){
+  try{
+    const d = await (await fetch('/api/install/status',{cache:'no-store'})).json();
+    document.getElementById('state').textContent =
+      d.state + (d.elapsed ? ' \u00b7 ' + d.elapsed + 's' : '');
+    document.getElementById('tfa').style.display = d.state === 'awaiting_2fa' ? '' : 'none';
+    document.getElementById('logbox').style.display = d.lines.length ? '' : 'none';
+    const log = document.getElementById('log');
+    const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+    log.textContent = d.lines.join('\n');
+    if (atBottom) log.scrollTop = log.scrollHeight;
+    if (d.error) document.getElementById('msg').textContent = d.error;
+  }catch(e){}
+}
+poll(); setInterval(poll, 1500);
+</script>
+</body>
+</html>
+"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "AltServerStatus/0.1"
 
@@ -198,6 +286,10 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             self._send(200, PAGE, "text/html; charset=utf-8")
+        elif path == "/install":
+            self._send(200, INSTALL_PAGE, "text/html; charset=utf-8")
+        elif path == "/api/install/status":
+            self._send(200, json.dumps(installer.INSTALLER.snapshot()), "application/json")
         elif path == "/pairing":
             self._send(200, PAIRING_PAGE, "text/html; charset=utf-8")
         elif path == "/api/pairing":
@@ -218,6 +310,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(data), "application/json")
         else:
             self._send(404, "not found\n", "text/plain; charset=utf-8")
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            self._send(400, json.dumps({"ok": False, "error": "bad request"}), "application/json")
+            return
+
+        if path == "/api/install/start":
+            ok, err = installer.INSTALLER.start(
+                body.get("udid", ""), body.get("apple_id", ""), body.get("password", ""),
+                os.environ.get("ALTSERVER_ANISETTE_SERVER"))
+            self._send(200, json.dumps({"ok": ok, "error": err}), "application/json")
+        elif path == "/api/install/code":
+            ok, err = installer.INSTALLER.submit_code(body.get("code", ""))
+            self._send(200, json.dumps({"ok": ok, "error": err}), "application/json")
+        else:
+            self._send(404, json.dumps({"ok": False, "error": "not found"}), "application/json")
 
     def log_message(self, fmt, *args):
         pass  # the dashboard polls every 30s; logging that is pure noise

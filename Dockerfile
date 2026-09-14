@@ -58,6 +58,12 @@ COPY --from=build /out/AltServer /usr/local/bin/AltServer
 
 # Fetches the current AltStore Classic IPA, resolving the URL from AltStore's own catalogue rather
 # than a hardcoded one -- a pinned URL silently installs an ever-older AltStore.
+# The setup web UI: status dashboard, pairing wizard and the install flow. Run it with
+#   docker exec altserver python3 /opt/altserver-web/server.py --host 0.0.0.0
+# It is NOT started automatically -- it accepts an Apple ID password, so exposing it should be a
+# deliberate act rather than a side effect of deploying.
+COPY web/ /opt/altserver-web/
+
 COPY web/fetch_altstore.py /usr/local/bin/fetch-altstore
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 RUN chmod +x /usr/local/bin/fetch-altstore /usr/local/bin/docker-entrypoint
