@@ -269,7 +269,7 @@ async function poll(){
     document.getElementById('logbox').style.display = d.lines.length ? '' : 'none';
     const log = document.getElementById('log');
     const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
-    log.textContent = d.lines.join('\n');
+    log.textContent = d.lines.join(String.fromCharCode(10));
     if (atBottom) log.scrollTop = log.scrollHeight;
     if (d.error) showMsg(d.error);
   }catch(e){}
