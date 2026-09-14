@@ -1,0 +1,7 @@
+.git
+build/
+*.o
+.DS_Store
+._*
+REVIVAL.md
+BOOTSTRAP.md

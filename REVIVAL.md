@@ -480,7 +480,17 @@ Consequences, and they are exactly the wrong shape for a headless box:
 These are the operator's stated end-goals for the project. Do not start them until the blockers
 above are cleared; they are written down here with enough grounding to be picked up cold.
 
-**F1. Self-contained deploy.** Point Portainer (or any compose-based platform) at the GitHub repo
+**F1. Self-contained deploy — LARGELY BUILT.** `Dockerfile` (multi-stage, installs every runtime
+prerequisite including the python3 + `libavahi-compat-libdnssd-dev` pair that otherwise fails
+silently, and *verifies* `CDLL('libdns_sd.so')` at build time so a broken image cannot ship),
+`deploy/altserver-stack.yml` (both services, `network_mode: host`, `init: true`, all the mounts),
+and `.github/workflows/build_image.yml` (publishes to `ghcr.io/<owner>/altserver-linux`, using
+`repository_owner` so a fork publishes to its own namespace instead of failing against someone
+else's — the mistake `build_docker.yml` makes). Portainer supports Git-repository stacks natively,
+so "point Portainer at the repo" now works. Remaining: make the package public once, and confirm
+the stack end-to-end on the host. Original notes:
+
+**F1 (original).** Point Portainer (or any compose-based platform) at the GitHub repo
 and have everything come up with no manual steps beyond entering account credentials. Portainer
 supports deploying a stack straight from a Git repository, so the shape is: a `docker-compose.yml`
 in the repo, an image published to `ghcr.io/ben-diehlci/`, `network_mode: host` for mDNS, a named
@@ -493,7 +503,17 @@ Open questions to research: can the anisette server be bundled in the same stack
 its own identity/state? What is the minimum set of secrets, and can they be Docker secrets rather
 than plain env vars? Does anything need to run privileged or with host devices for usbmuxd/netmuxd?
 
-**F2. Web interface, replacing the desktop GUI.** On macOS and Windows AltServer has a tray/GUI
+**F2. Web interface — now the main remaining piece, and the scope has grown.** Beyond sign-in,
+2FA entry, device selection and health, the operator wants it to **help connect the phone**, so
+that someone without background knowledge can get through setup. That is the right instinct:
+pairing is where a novice gets stuck, and the failure modes are opaque — the device must be
+*unlocked* for `idevicepair validate`; wireless pairing is impossible so a USB cable is mandatory
+once; and a real device fault is *displayed* as "AltServer could not be found" because AltStore
+remaps it for any server that is not `isPreferred`. A setup wizard that ran `idevice_id -l`,
+reported "plug your phone in and tap Trust", and distinguished those cases would remove most of
+the difficulty. Original notes:
+
+**F2 (original).** On macOS and Windows AltServer has a tray/GUI
 for signing in, entering the 2FA code, choosing a device and triggering a refresh. This port
 replaced all of that with a console implementation injected by
 `makefiles/rewrite_altserver_source.py`. A web UI is the natural equivalent for a headless box.
@@ -516,7 +536,7 @@ much of this session was spent on silent failures — visible health, i.e. is th
 is the anisette server reachable, when did the last successful refresh happen, and when do the
 current certificates expire.
 
-9. **Accept the Apple ID password from somewhere other than argv.** `-p` puts the password in
+9. ~~**Accept the Apple ID password from somewhere other than argv.**~~ **DONE** — `dcac3de`. `-p` puts the password in
    `ps` output for the life of the process and in shell history. An `ALTSERVER_APPLE_PASSWORD`
    env var, or reading from stdin when `-p` is absent, would fix it. Small, and it matters more
    once this runs unattended, where the password has to live somewhere anyway.
