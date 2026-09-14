@@ -408,7 +408,14 @@ Consequences, and they are exactly the wrong shape for a headless box:
    (nobody has reported it — the anisette failure fired first) and needs a real Apple ID to
    confirm 503→401. Only two of four call sites hit `gsa.apple.com`; the others hit
    `developerservices2.apple.com` and were never in the author's A/B test.
-3. **corecrypto layer 3.** `CORECRYPTO_SRCS` is populated at `CoreCryptoSources.cmake:189` and
+3. ~~**corecrypto layer 3.**~~ **SOLVED** — the diagnosis below was wrong, corrected from CI logs.
+   The real first error is `Cannot find source file: corecrypto_static/ccrng_static.c`;
+   `No SOURCES given to target` is a follow-on and the one people notice. Apple's 2024
+   distribution moved `ccrng_static.c` to the tree root but left `CoreCryptoSources.cmake:251`
+   pointing at the now-nonexistent `corecrypto_static/` subdirectory. Exactly one entry. Fixed by
+   a guarded sed in `buildenv/Dockerfile`; **cmake now configures** (`Generating done`). Also
+   settled: it is NOT arch-specific — the amd64 CI run fails identically to local aarch64.
+   Superseded note: `CORECRYPTO_SRCS` is populated at `CoreCryptoSources.cmake:189` and
    Linux subtracts `CORECRYPTO_EXCLUDE_SRCS` at `CMakeLists.txt:262`, but the list ends up empty
    at `add_library` (`:266`). Cheapest next probe: build the amd64 leg to see whether it is
    arch-specific. Closes #111.
