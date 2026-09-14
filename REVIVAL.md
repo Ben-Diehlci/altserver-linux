@@ -134,8 +134,30 @@ client that **already carried** the akd fix, which is why the akd rewrite *revea
 than causing it; iloader #709 places the 429 at the proof/complete request across five Apple IDs
 on five machines, so it is not account-scoped.
 
-**Fixed** in `makefiles/AltSign-build/rewrite_altsign_source.py`: `gsaClient()` now returns a fresh
-client per call. Untested against Apple at time of writing.
+**PROVEN 2026-09-14, with zero Apple ID attempts.** `docs/gsa-connection-probe.sh` sends four
+`o=init` requests (no password, nonexistent `.invalid` address) against the real endpoint:
+
+| Run | Request | Status | `num_connects` |
+|---|---|---|---|
+| A — one curl, `--next` | 1 | `200` | 1 |
+| A — one curl, `--next` | 2 | **`429`** | **0** ← socket reused |
+| B — `Connection: close` | 1 | `200` | 1 |
+| B — `Connection: close` | 2 | **`200`** | 1 ← fresh socket |
+
+Byte-identical requests; the only variable is whether the socket was reused. This is **not volume
+throttling** — waiting between attempts was never going to help, and the per-connection rule
+explains every observation: positional, stable, non-cumulative, present on the first attempt ever.
+
+**Fixed** in `makefiles/AltSign-build/rewrite_altsign_source.py`: `gsaClient()` returns a fresh
+client per call. The fix matches the proven mechanism; still to be confirmed by an actual sign-in.
+
+Two corrections recorded so they are not re-derived. The probe's first run returned `HTTP 000`
+with "self-signed certificate in certificate chain", which looks like interception but is not:
+`gsa.apple.com` is served from **`Apple Server Authentication CA`**, Apple's own private CA, which
+no public trust store contains. DNS is clean (both resolvers answer inside Apple's `17.0.0.0/8`;
+differing addresses are Akamai geo-routing). Consequently `set_validate_certificates(false)` on the
+GSA client in `AppleAPI.cpp` is **required**, not careless — pinning Apple's CA would be an
+improvement, but it is not the security hole it resembles.
 
 Known remaining divergence, NOT the cause: our sanitizer replaces only the bundle-id substring, so
 the wire value is `com.apple.akd/3594.4.19` — akd has never carried an Xcode build number.
