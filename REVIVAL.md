@@ -143,12 +143,48 @@ breaks the premise soonest, not by how interesting the code is.
   Covers issues #87, #81, #77, #76, #75, #122, #49, #13 — previously triaged as mostly
   user-error, but for *this* deployment they describe the critical path. Needs a verified,
   written-down working configuration.
-- **D. iOS-version signing compatibility.** Only matters if the target device runs iOS 26.4+,
-  where apps install but crash at launch (#131). That needs the `upstream_repo` bump, item 4
-  below. Check the device's iOS version before spending effort here.
+- **D. iOS-version signing compatibility — CONFIRMED IN SCOPE.** The target device runs
+  **iOS 26.x**, so #131 applies: apps install successfully and then crash at launch. This is not
+  hypothetical and cannot be worked around by configuration; it needs the `upstream_repo` bump
+  (item 4 below), which is the largest remaining code task. Note the failure mode is
+  *deceptive* — installation reports success, so everything looks fine until the app is opened.
 
 Items A and C are deployment/config work rather than patches, and both need a real device to
-confirm. B is a small patch. None of them are blocked by anything already done.
+confirm. B is a small patch. D is a substantial one. None are blocked by anything already done.
+
+### Confirmed deployment facts
+
+Target device runs **iOS 26.x** → #131 / the `upstream_repo` bump is required.
+Anisette: **none yet**, needs standing up, most likely as another container on the same box.
+
+Host (from the operator's `HOMELAB_CONTEXT.md`):
+
+| | |
+|---|---|
+| Hardware | Dell OptiPlex 5060, Intel **x86_64** |
+| Stack | Proxmox → Ubuntu VM → Docker, managed via Portainer |
+| Binary | **`AltServer-x86_64`** — already produced by our CI, confirmed by artifact name |
+| mDNS | `apt install libavahi-compat-libdnssd1` on the VM; `network_mode: host` if containerised |
+| Registry | Already publishes to `ghcr.io/ben-diehlci/` |
+| Network | Zero open router ports; Cloudflare Tunnels + NPM for external access |
+| Philosophy | Prefer simplicity; avoid unjustified complexity |
+
+Consequences for this project:
+
+- The x86_64 leg is the one that matters. It builds under Rosetta locally and is already green
+  in CI. `aarch64` remains the fast local loop for compile-checking.
+- Sideloading is **entirely LAN-local**. Cloudflare Tunnels, NPM and the zero-open-ports posture
+  are irrelevant to it — no reverse proxy should be put in front of AltServer, and nothing about
+  this needs to be externally reachable.
+- Because they already own `ghcr.io/ben-diehlci/`, re-namespacing `build_docker.yml` (item 6)
+  stops being hypothetical, and a purpose-built AltServer container for the Portainer stack
+  becomes the natural deliverable — see item 8.
+
+**OPEN QUESTION, and it gates everything:** is the Ubuntu VM's NIC **bridged** onto the same L2
+segment as the phone's Wi-Fi, or NAT'd behind Proxmox? mDNS/Bonjour is link-local and does not
+cross subnets or VLANs. If the VM is NAT'd, or the phone is on a guest/IoT VLAN, the device will
+never discover `_altserver._tcp` no matter how correct everything else is. This is cheap to
+check and would invalidate a lot of downstream work, so check it first.
 
 ### Next up
 
@@ -189,7 +225,13 @@ confirm. B is a small patch. None of them are blocked by anything already done.
    cannot write to, so it fails on the fork regardless. Only worth fixing if we decide to own
    our own builder images. Separately, `build_docker.sh` passes no `--platform`, so all four
    builds run as host-arch regardless of the arch-specific base image.
-7. **getopt hygiene** (`src/AltServerMain.cpp`). `case 'a'` has no `break` and falls through to
+8. **Purpose-built container for the Portainer stack.** Given the host is Docker-on-Ubuntu
+   managed by Portainer, and `ghcr.io/ben-diehlci/` already exists, the natural end state is an
+   image containing `AltServer-x86_64`, `python3` and `libavahi-compat-libdnssd1`, deployed with
+   `network_mode: host` and an absolute bind mount for `AltServerData`. Pairs with item 6.
+   Remember `./AltServerData` is a **relative** path, so `WorkingDirectory` / the container
+   workdir matters.
+9. **getopt hygiene** (`src/AltServerMain.cpp`). `case 'a'` has no `break` and falls through to
    `case 'p'`, so `-a` sets *both* appleID and password; `-h` is documented and handled at
    `case 'h'` but absent from the optstring `"u:i:a:p:P:d"`, so it is unreachable; five `char*`
    are uninitialised. All real UB — but fix as hygiene and claim no issue: across 16 pasted
