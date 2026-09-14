@@ -83,6 +83,7 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | `6cd382a` | **node24 bump**, part 1: checkout v4→v7, setup-qemu v3→v4, login-action v3→v4, gh-release v2→v3. |
 | `8494e36` | **node24 bump**, part 2: third-party uploader → `actions/upload-artifact@v7`, download-artifact v4→v8, matrix restructured to carry an `arch` label. |
 | `a266861` | **corecrypto**, 2 of 3 layers. Does *not* close #111. |
+| `<pending>` | **Bootstrap blockers cleared:** PR #135 client-info sanitization (with an `ALTSERVER_NO_CLIENTINFO_SANITIZE` escape hatch), and the getopt `-a` fallthrough / uninitialised argv pointers / unreachable `-h`. |
 | `65a5727` | **#131 fixed** via the ldid rewriter: capture the SHA-256 CodeDirectory hash before truncating to 20 bytes. Build-verified; **not** verified on an iOS 26 device. |
 | `654907a` | **mDNS advertisement failure made loud.** Both failure paths verified; success path NOT verified locally — no working avahi in the build container. Must be confirmed on the real host. |
 | `b885501` | **anisette error handling** rewritten; `mktime`→`timegm`; `ResetProvisioning` Windows-path bug. Closes #104. |
@@ -401,7 +402,7 @@ Consequences, and they are exactly the wrong shape for a headless box:
    Note: stuffing `NSLocalizedRecoverySuggestionErrorKey` into `userInfo` does **not** work —
    `ServerError::localizedRecoverySuggestion()` returns from its `case` before reaching
    `default`.
-2. **PR #135 — sanitize `X-MMe-Client-Info`.** Rewrite `com.apple.dt.Xcode` → `com.apple.akd` at
+2. ~~**PR #135 — sanitize `X-MMe-Client-Info`.**~~ **DONE** — see the Done table. Original note kept for the caveats: Rewrite `com.apple.dt.Xcode` → `com.apple.akd` at
    `src/AnisetteDataManager.cpp`, the single point where anisette data enters. Apple's GSA edge
    503s any request carrying that substring as of ~2026-09. Trivial. Closes no open issue
    (nobody has reported it — the anisette failure fired first) and needs a real Apple ID to
@@ -438,7 +439,7 @@ Consequences, and they are exactly the wrong shape for a headless box:
    `network_mode: host` and an absolute bind mount for `AltServerData`. Pairs with item 6.
    Remember `./AltServerData` is a **relative** path, so `WorkingDirectory` / the container
    workdir matters.
-8. **getopt hygiene** (`src/AltServerMain.cpp`). `case 'a'` has no `break` and falls through to
+8. ~~**getopt hygiene**~~ **DONE** (`src/AltServerMain.cpp`). `case 'a'` has no `break` and falls through to
    `case 'p'`, so `-a` sets *both* appleID and password; `-h` is documented and handled at
    `case 'h'` but absent from the optstring `"u:i:a:p:P:d"`, so it is unreachable; five `char*`
    are uninitialised. All real UB — but fix as hygiene and claim no issue: across 16 pasted

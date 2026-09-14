@@ -104,11 +104,13 @@ int main(int argc, char *argv[]) {
           {0, 0, 0, 0}
         };
 	
-	char *udid;
-	char *ipaddr;
-	char *appleID;
-	char *password;
-	char *pairDataFile;
+	// Initialised: these are read unconditionally at the install call below, so leaving them
+	// indeterminate made a missing flag undefined behaviour rather than an error.
+	char *udid = NULL;
+	char *ipaddr = NULL;
+	char *appleID = NULL;
+	char *password = NULL;
+	char *pairDataFile = NULL;
 	
 	char *ipaPath = NULL;
 	int debugLogLevel = 0;
@@ -117,7 +119,9 @@ int main(int argc, char *argv[]) {
 		int this_option_optind = optind ? optind : 1;
 		int option_index = 0;
 
-		int c = getopt_long (argc, argv, "u:i:a:p:P:d",
+		// 'h' was handled below but missing from this string, so -h fell through to the error
+		// branch and printed "?? getopt returned character code 077 ??" before the usage text.
+		int c = getopt_long (argc, argv, "hu:i:a:p:P:d",
 						long_options, &option_index);
 		if (c == -1) break;
 
@@ -130,6 +134,7 @@ int main(int argc, char *argv[]) {
 			break;
         case 'a':
 			appleID = optarg;
+			break;   // was missing: -a fell through into -p, so `-a ID` set the password to ID too
         case 'p':
             password = optarg;
 			break;
@@ -165,6 +170,18 @@ int main(int argc, char *argv[]) {
  		while (optind < argc)
             printf("%s ", argv[optind++]);
         printf("\n");
+		return 1;
+	}
+
+	if (installApp && (udid == NULL || appleID == NULL || password == NULL))
+	{
+		fprintf(stderr,
+			"ERROR: installing an IPA requires -u/--udid, -a/--appleID and -p/--password.\n"
+			"       Missing:%s%s%s\n"
+			"       Run with no IPA argument to start in server (daemon) mode instead.\n",
+			udid == NULL ? " --udid" : "",
+			appleID == NULL ? " --appleID" : "",
+			password == NULL ? " --password" : "");
 		return 1;
 	}
 
