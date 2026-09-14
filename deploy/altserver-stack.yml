@@ -91,6 +91,11 @@ services:
       # Reaches the anisette service above via the host's loopback.
       ALTSERVER_ANISETTE_SERVER: http://127.0.0.1:6969
 
+      # The entrypoint refreshes /data/AltStore.ipa on every start, resolving the current
+      # version from AltStore's own catalogue -- so there is no IPA to download by hand and
+      # no hardcoded URL to go stale. Set to 1 to leave the file alone (e.g. to pin a build).
+      ALTSTORE_SKIP_FETCH: "0"
+
       # Credentials. Prefer putting these in Portainer's stack environment variables rather than
       # committing them. They are only needed for sign-in; see BOOTSTRAP.md.
       # Passing them here beats -p on a command line, which exposes the password in `ps`.
