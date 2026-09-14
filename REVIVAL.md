@@ -122,6 +122,121 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 
 ---
 
+## Deployment research findings (2026-09-14)
+
+**Scope: one iPhone, iOS 26.x. No iPad, no second device, no other systems.** So multi-device
+concerns, `activeProfiles` juggling and device-slot exhaustion (#113, #86) are all out of scope.
+
+### Host prerequisites — concrete checklist
+
+- **`python3` on the service's PATH.** A *runtime* dependency, not a build one:
+  `dnssd_loader.cpp:68` `execlp`s it, because the AltServer binary is `-static` and cannot dlopen
+  Bonjour itself. Needs only stdlib `ctypes`.
+- **`libavahi-compat-libdnssd-dev`**, not `...-libdnssd1`. Confirmed on the target host.
+- **`avahi-daemon` running, with dbus under it.** avahi-compat is a thin client proxying to the
+  daemon; it owns UDP/5353, not us.
+- **`/etc/avahi/avahi-daemon.conf`**: `[publish] disable-publishing=no`,
+  `disable-user-service-publishing=no`, and `allow-interfaces=ens18` so avahi does not also
+  publish `docker0`/`virbr0` — `DNSServiceRegister` is called with `interfaceIndex 0`
+  (`ConnectionManager.cpp:122`). Consider `use-ipv6=no`: `ConnectionManager.cpp:140,152` binds
+  AF_INET only, while upstream macOS uses a dual-stack listener.
+- **`avahi-utils`** for `avahi-browse` — the only way to distinguish *published* from
+  *DNSServiceRegister returned 0*.
+- **`usbmuxd` + `libimobiledevice-utils`** for the one-time cabled pairing and for triaging
+  netmuxd without involving AltServer.
+- **`netmuxd` >= 0.3 owning `/var/run/usbmuxd`, with `usbmuxd` STOPPED.** Stock usbmuxd never
+  emits ConnectionType "Network", and netmuxd binds that socket by default, so the two collide.
+  The only success report in #77 is: netmuxd, no flags, usbmuxd not running. If pointing at TCP
+  instead, the variable is `USBMUXD_SOCKET_ADDRESS` — the widely-copied instruction in #49
+  misspells it `USBMUXD_SOCKET_ADRESS` (one D) and is silently ignored.
+- **`/var/lib/lockdown` on real persistent storage, never tmpfs.** Back up `<UDID>.plist` **and**
+  `SystemConfiguration.plist` as a unit — they are not independent, and half a pairing is
+  indistinguishable from none. In Docker this lives in whichever container runs the muxer.
+- **Anisette on the same box, loopback, plain HTTP**, ADI state on a named volume. Plain
+  `http://127.0.0.1:6969` also sidesteps TLS trust entirely: `FetchAnisetteData` uses the default
+  http_client config, so certificate verification is ON (unlike AltSign's gsa client).
+- **Accurate NTP on whichever host runs the ANISETTE server**, not the AltServer host. Linux
+  forwards the anisette server's `X-Apple-I-Client-Time` verbatim; macOS stamps `Date()` locally.
+- **Absolute `WorkingDirectory`** (systemd) or workdir (docker) — `./AltServerData` is relative
+  and systemd defaults CWD to `/`.
+- **Disable journald rate limiting** for the unit (`LogRateLimitIntervalSec=0`,
+  `LogRateLimitBurst=0`). `WirelessConnection.cpp:95,122` print two unbuffered lines per <=4096-byte
+  chunk, so a large transfer trips the 10000-per-30s default — and the suppressed messages are the
+  ones at the END of an install, exactly the errors you want.
+- **Firewall: the whole ephemeral TCP range on the LAN interface, plus UDP/5353 both ways.**
+  `ConnectionManager.cpp:151` sets `sin_port = 0`, so the port differs every start and no static
+  rule is writable.
+- **Docker only:** `network_mode: host`, a bind mount of the dbus system bus socket (or
+  avahi-daemon inside the image), and **`init: true`** — the binary installs no SIGTERM handler,
+  so as PID 1 the kernel drops `docker stop`'s SIGTERM and every restart costs the full grace
+  period then SIGKILL.
+- **`chmod +x` the downloaded release binary** — artifact upload does not preserve the bit.
+  systemd at least fails legibly here: `status=203/EXEC`.
+
+### Silent failure modes — the real enemy for unattended operation
+
+Ranked. These are the ways it stops refreshing with nobody finding out.
+
+1. **Both ends go quiet at once.** Covered above: the phone suppresses server-not-found on
+   background refresh, and the server logs nothing because no connection was attempted. Zero
+   evidence anywhere. This is why the Shortcuts intent path
+   (`RefreshAllAppsIntent.swift:187`, `ignoresServerNotFoundError = false`) is a requirement.
+2. **`DNSServiceRegister result: 0` is not proof of publication.** A user in `closed_issue_0051`
+   got result 0 with avahi-daemon *stopped* — consistent with avahi-compat deferring via
+   `AVAHI_CLIENT_NO_FAIL`. **Our committed fix (`654907a`) does not close this**: it catches a
+   child that exits, and the `sys.exit` addition catches a non-zero result, but it cannot catch
+   avahi *lying* about success. Only an out-of-band `avahi-browse` from another host can.
+3. **avahi restarts and nothing re-registers.** `StartAdvertising` is called exactly once
+   (`ConnectionManager.cpp:174`). No retry, no health check, and nothing calls
+   `DNSServiceProcessResult`, so the registration callback never fires either way. An
+   unattended-upgrades run touching avahi overnight is a multi-day silent outage.
+4. **A stale python3 child can advertise a dead port.** `PR_SET_PDEATHSIG` fires when the
+   *forking thread* exits, not the process, and the fork happens on the listening thread. The
+   child can survive holding a registration for an ephemeral port that no longer exists; since
+   `flags = 0` (no `NoAutoRename`), avahi renames rather than replaces, and the phone takes
+   `discoveredServers.first` — a coin flip between live and dead.
+5. **A dropped client pins a worker at 100% CPU and floods the disk.** `ReceiveData` ignores
+   `recv()`'s return (`WirelessConnection.cpp:116`); on peer close it returns 0 forever while
+   select still reports readable, so the loop spins printing two lines per pass. Enough of these
+   exhaust cpprest's ~40-thread pool and the daemon stops answering while still reporting
+   `active (running)`. Never filed — it presents as "the server stopped refreshing".
+6. **A response that failed to send is logged as success.** `SendData` never checks `send()`'s
+   return while SIGPIPE is ignored, and its break condition is true on the first iteration
+   regardless. Journal says "Finished handling request!"; the device saw a timeout.
+7. **Anisette identity silently regenerates.** Every identity field comes from the HTTP response;
+   Linux holds no local ADI state. A container recreated onto the wrong volume path means Apple
+   sees a new machine and demands 2FA — which background refresh can never surface. #86 reports
+   exactly this.
+8. **Anisette clock drift is invisible here.** We parse and re-emit the *server's* timestamp, so
+   NTP on the AltServer box proves nothing; skew surfaces as an opaque -36607.
+9. **`X-Apple-I-MD-RINFO` uses `std::atoi`**, which returns 0 for non-numeric input with no error
+   — the one field of the ten not guarded by `requireString`. Pre-existing; unchanged by our work.
+10. **Real device faults are displayed as "AltServer could not be found".** AltStore remaps
+    deviceNotFound/lostConnection to serverNotFound for any wireless server that is not
+    `isPreferred`, and AltServer-Linux hardcodes serverID `"1234567"` while Mac/Windows use a
+    UUID — so unless the Linux box itself installed AltStore, `isPreferred` is permanently false
+    and every netmuxd/pairing fault wears the wrong error message. **This will send you to debug
+    mDNS when mDNS is fine.**
+11. **Adding `-d` makes the decisive lines disappear.** `AltServerMain.cpp:179` calls
+    `libusbmuxd_set_debug_level(debugLogLevel - 2)`, so one `-d` sets level -1 and
+    `LIBUSBMUXD_ERROR` stops printing — losing exactly the two messages that diagnose a netmuxd
+    mismatch.
+12. **`journalctl -p err` is empty no matter what breaks.** `OutputDebugStringA` is `std::cout`,
+    so nearly everything is stdout at info. Severity filtering is useless on this unit, and
+    unbuffered cout from ~40 threads interleaves mid-token, so even grep can miss it.
+13. **The CLI bootstrap exits 0 even when it failed.** `AltServerMain.cpp:224-238` catches, logs,
+    prints "Finished!" and falls off the end of main. A oneshot unit cannot tell success from
+    failure.
+14. **No liveness signal at all, so `Restart=` can never fire.** `main()` ends in
+    `while (1) { sleep(100); }` and never joins the listening thread. `Listen()` can return early
+    on socket or bind failure and the process stays `active (running)` forever with no listener
+    and no advertisement.
+
+**Conclusion: build an external watchdog before trusting any of this.** Something that
+independently runs `avahi-browse` to confirm the service is published, checks the anisette
+endpoint, and tracks when a refresh last actually succeeded. Nothing inside AltServer can be
+trusted to report its own health.
+
 ## TODO
 
 ### Blockers for the actual goal — a working headless refresh server
