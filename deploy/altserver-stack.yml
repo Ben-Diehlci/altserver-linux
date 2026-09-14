@@ -76,6 +76,31 @@ services:
     depends_on:
       - anisette
 
+    # REQUIRED for mDNS. Docker's default AppArmor profile denies D-Bus method calls, blocking
+    # the very first one a client makes:
+    #   apparmor="DENIED" operation="dbus_method_call" member="Hello" label="docker-default"
+    # avahi-compat talks to avahi-daemon over the system bus, so without this the container cannot
+    # reach it at all: DNSServiceRegister returns -65553 (Refused) and the server is silently
+    # undiscoverable. Sockets, D-Bus policy and uid all look correct, because none of them are
+    # ever consulted -- the call never leaves the container.
+    #
+    # BETTER OPTION, tested and shipped: deploy/apparmor/altserver-mdns is docker-default plus the
+    # narrowest D-Bus rules Bonjour needs (the bus handshake and org.freedesktop.Avahi, nothing
+    # else). Verified: under docker-default the call fails "Access denied" with an AppArmor denial
+    # in the kernel log; under altserver-mdns it reaches the daemon with zero denials.
+    #
+    #     sudo bash deploy/apparmor/install.sh
+    #
+    # then change the line below to `- apparmor=altserver-mdns` and redeploy.
+    #
+    # The default stays `unconfined` ONLY so that deploying straight from the repo works with no
+    # host preparation: a container asking for a profile the host has not loaded FAILS TO START,
+    # which would be a worse first experience than a container with one LSM relaxed. seccomp,
+    # namespaces and cgroups still apply either way, so this is still more confined than running
+    # AltServer directly on the host -- the actual alternative.
+    security_opt:
+      - apparmor=unconfined
+
     # REQUIRED. The binary installs no SIGTERM handler (its only signal call is
     # signal(SIGPIPE, SIG_IGN)), so as PID 1 the kernel discards docker stop's SIGTERM and every
     # restart costs the full 10s grace period followed by SIGKILL.
@@ -124,6 +149,13 @@ services:
       - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
       - /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket
 
+      # REQUIRED for the above to work. libdbus needs a machine ID to connect to the system bus,
+      # and debian-slim ships none -- without it avahi fails at client creation with
+      # "Access denied", which reads as a permissions problem on the sockets (they are fine) or
+      # an avahi policy problem (also fine). Symptom: DNSServiceRegister returns -65553 (Refused).
+      - /etc/machine-id:/etc/machine-id:ro
+      - /var/lib/dbus/machine-id:/var/lib/dbus/machine-id:ro
+
     # No IPA argument => daemon mode. The first-time install is a separate one-off run; see
     # BOOTSTRAP.md Phase 4. You can do it from Portainer's container console:
     #   AltServer -u "$ALTSERVER_UDID" -a "$ALTSERVER_APPLE_ID" -p "$ALTSERVER_APPLE_PASSWORD" /data/AltStore.ipa
@@ -150,6 +182,31 @@ services:
     # Same host network as altserver, so it sees the same usbmuxd, the same avahi, and can report
     # on the real _altserver._tcp advertisement rather than a bridged illusion of it.
     network_mode: host
+
+    # REQUIRED for mDNS. Docker's default AppArmor profile denies D-Bus method calls, blocking
+    # the very first one a client makes:
+    #   apparmor="DENIED" operation="dbus_method_call" member="Hello" label="docker-default"
+    # avahi-compat talks to avahi-daemon over the system bus, so without this the container cannot
+    # reach it at all: DNSServiceRegister returns -65553 (Refused) and the server is silently
+    # undiscoverable. Sockets, D-Bus policy and uid all look correct, because none of them are
+    # ever consulted -- the call never leaves the container.
+    #
+    # BETTER OPTION, tested and shipped: deploy/apparmor/altserver-mdns is docker-default plus the
+    # narrowest D-Bus rules Bonjour needs (the bus handshake and org.freedesktop.Avahi, nothing
+    # else). Verified: under docker-default the call fails "Access denied" with an AppArmor denial
+    # in the kernel log; under altserver-mdns it reaches the daemon with zero denials.
+    #
+    #     sudo bash deploy/apparmor/install.sh
+    #
+    # then change the line below to `- apparmor=altserver-mdns` and redeploy.
+    #
+    # The default stays `unconfined` ONLY so that deploying straight from the repo works with no
+    # host preparation: a container asking for a profile the host has not loaded FAILS TO START,
+    # which would be a worse first experience than a container with one LSM relaxed. seccomp,
+    # namespaces and cgroups still apply either way, so this is still more confined than running
+    # AltServer directly on the host -- the actual alternative.
+    security_opt:
+      - apparmor=unconfined
 
     # Lets the status page see whether the AltServer daemon is actually running. Containers have
     # separate PID namespaces, so without this a sidecar reports "not running" no matter how
@@ -178,6 +235,9 @@ services:
       - /var/run/usbmuxd:/var/run/usbmuxd
       - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
       - /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket
+      # Same machine-id requirement as altserver -- avahi-browse needs D-Bus too.
+      - /etc/machine-id:/etc/machine-id:ro
+      - /var/lib/dbus/machine-id:/var/lib/dbus/machine-id:ro
 
     entrypoint: ["python3", "/opt/altserver-web/server.py"]
     command: ["--host", "0.0.0.0", "--port", "8099"]
