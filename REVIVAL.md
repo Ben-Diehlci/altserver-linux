@@ -706,6 +706,45 @@ After redeploying with `apparmor=unconfined`, the new container logs
 Remaining `dmesg` denials are from ad-hoc `docker run` / `docker exec` diagnostics, which do not
 inherit the stack's `security_opt`. They are noise, not a regression.
 
+### CONFIRMED 2026-09-15: the reachability check used a USB-only flag, so it could never pass
+
+The status page showed **FAIL -- "No device on either transport"** while wireless refresh was
+demonstrably working, profiles installing over Wi-Fi with no cable attached.
+
+Not a timing artefact or a stale reading. `web/status_checks.py` probed the netmuxd socket with
+`idevice_id -l`, and `-l` is not a verbosity switch -- it selects the transport. From
+`libraries/libimobiledevice/tools/idevice_id.c`:
+
+```c
+case 'l': mode = MODE_LIST_DEVICES; include_usb = 1;     break;
+case 'n': mode = MODE_LIST_DEVICES; include_network = 1; break;
+...
+} else if (argc == 0 && optind == 1) { include_usb = 1; include_network = 1; }
+```
+
+netmuxd only ever presents the phone as `ConnectionType: Network`, so `idevice_id -l` against its
+socket returns an empty list **unconditionally**. The check was structurally incapable of
+reporting OK for a wireless-only deployment -- which is the only deployment this project targets
+and the exact thing the check exists to verify.
+
+`idevicepair validate` on the success path had the same defect: `tools/idevicepair.c:372` selects
+`(use_network) ? IDEVICE_LOOKUP_NETWORK : IDEVICE_LOOKUP_USBMUX`, so without `-n` it validates a
+USB pairing that does not exist on a cable-free server and reports a stale pairing record. Both
+would have had to be right for the check to ever go green; neither was.
+
+Fixed: `-n` for the netmuxd probe, `-l` kept for the host usbmuxd probe, and `-n` added to
+`idevicepair validate`. The transport flag is now a required argument of `_devices_via` rather
+than a literal inside it, so the two probes cannot silently drift onto the same transport again.
+
+**This also explains an earlier loose end.** `docker exec altserver idevice_id -l` printing nothing
+was recorded as unexplained. Same cause: `-l`, USB only, against a network-only mux. It was never
+evidence of anything.
+
+Note the direction of the error. During the sockaddr bug this check said FAIL, and was read as
+confirmation. It was right by accident, for a reason unrelated to the actual fault -- and it kept
+saying FAIL after the fault was fixed. A check that cannot pass is not a strict check, it is a
+broken one, and it is worth less than no check because it is trusted.
+
 ### CONFIRMED 2026-09-14: the status page CANNOT detect the bug above -- it reports green
 
 `web/status_checks.py` shells out to `idevice_id` / `idevicepair`, which are **Debian's**
