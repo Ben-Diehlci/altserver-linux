@@ -1,6 +1,9 @@
 /build
+/build_*/
 *.o
 .vscode
+.idea/
+*.swp
 
 # macOS
 .DS_Store
@@ -9,3 +12,34 @@
 # python
 __pycache__/
 *.pyc
+
+# --- Never commit these -------------------------------------------------------------------
+# Signing material. A leaked .p12 contains the PRIVATE KEY for your Apple developer certificate,
+# and AltServer caches one named after your team id under AltServerData/Certificates/.
+*.p12
+*.pem
+*.key
+*.cer
+*.mobileprovision
+AltServerData/
+
+# Credentials and machine identity. The stack reads these from the environment; a .env holding an
+# Apple ID password must never reach a public fork.
+.env
+.env.*
+anisette-state.tgz
+lockdown-backup*.tgz
+
+# Device pairing records -- named after the phone's UDID, which identifies the hardware.
+*.plist.lockdown
+lockdown/
+
+# Diagnostic and runtime output. `git-credential-manager diagnose` writes gcm-diagnose.log into
+# the current directory and it captures the whole environment, including unrelated tokens.
+*.log
+gcm-diagnose.log
+
+# Build artefacts fetched or produced at runtime.
+AltStore.ipa
+AltServer-*[!.]
+!AltServer-*.cpp
