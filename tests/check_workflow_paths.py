@@ -24,6 +24,7 @@ makefiles rather than listed here -- a hardcoded list is the very thing that goe
 import os
 import posixpath
 import re
+import subprocess
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -142,10 +143,38 @@ def filter_patterns():
     return pats
 
 
-def covered(src, pats):
+def gitlink_paths():
+    """Repo-relative paths of submodules, i.e. entries git stores with mode 160000."""
+    try:
+        out = subprocess.run(["git", "-C", ROOT, "ls-files", "-s"],
+                             capture_output=True, text=True, check=True).stdout
+    except Exception:
+        return set()
+    found = set()
+    for line in out.splitlines():
+        parts = line.split(maxsplit=3)
+        if len(parts) == 4 and parts[0] == "160000":
+            found.add(parts[3].strip())
+    return found
+
+
+def covered(src, pats, exact_only=False):
+    """Which filter pattern matches `src`, or None.
+
+    `exact_only` is for paths git reports AS THEMSELVES rather than via a child -- a submodule
+    bump changes one gitlink entry, so the push reports the bare path (`upstream_repo`), never
+    `upstream_repo/<anything>`. GitHub's `upstream_repo/**` requires that `upstream_repo/` prefix
+    and so would NOT match, while a bare `upstream_repo` does. Treating the two as equivalent
+    would pass a filter that never fires.
+    """
     src = src.rstrip("/")
     for p in pats:
-        base = p.rstrip("/").removesuffix("/**").removesuffix("/*")
+        pat = p.rstrip("/")
+        if exact_only:
+            if src == pat:
+                return p
+            continue
+        base = pat.removesuffix("/**").removesuffix("/*")
         if src == base or src.startswith(base + "/"):
             return p
     return None
@@ -161,10 +190,26 @@ def main():
             # the binary is decided by the makefiles, not by this COPY. Listing '**' in the filter
             # would rebuild the image for a README typo, so it names the compile inputs instead --
             # and those are derived below rather than assumed.
+            gitlinks = gitlink_paths()
             for path, where in sorted(compile_inputs().items()):
-                hit = covered(path, pats)
+                # A compile input that IS a submodule is reported by git as the bare path, so a
+                # `path/**` glob would never match it. One that merely CONTAINS submodules is
+                # fine: bumping libraries/libimobiledevice reports that full path, which
+                # `libraries/**` does match.
+                is_gitlink = path.rstrip("/") in gitlinks
+                hit = covered(path, pats, exact_only=is_gitlink)
                 if hit:
-                    print("ok    %-28s compiled in, covered by %r" % (path, hit))
+                    print("ok    %-28s compiled in, covered by %r%s"
+                          % (path, hit, " (submodule: exact match required)" if is_gitlink else ""))
+                elif is_gitlink:
+                    loose = covered(path, pats)
+                    failures.append(
+                        "%r is a SUBMODULE compiled into the binary (referenced by %s). A bump "
+                        "changes only its gitlink, so the push reports the bare path %r -- "
+                        "never %r.\n      build_image.yml must list it as a bare entry; %s would "
+                        "not match and the image would silently keep the old binary."
+                        % (path, where, path, path + "/...",
+                           ("the glob %r" % loose) if loose else "a glob"))
                 else:
                     failures.append(
                         "Dockerfile:%d `COPY . /src` + `make` COMPILES %r into the binary "

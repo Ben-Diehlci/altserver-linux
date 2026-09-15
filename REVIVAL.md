@@ -442,6 +442,41 @@ Two fixes, MUTUALLY EXCLUSIVE -- a bumped libimobiledevice rejects v0.1.4's layo
 Pinning netmuxd to v0.1.4 is a DIAGNOSTIC ONLY: it predates the heartbeat, the async pair-record
 cache, and iOS 26.4+ TXT matching, on an iOS 26 phone.
 
+### CONFIRMED 2026-09-14: `dir/**` does NOT match a submodule bump -- and the guard accepted it
+
+Found while checking whether the new `libraries/**` filter entry actually fires. It does, but the
+reasoning matters and the guard was one edit away from being wrong again.
+
+**A submodule bump changes only the gitlink, so git reports the BARE path.** Verified against this
+repo's own history -- `git show --name-only fa3abe2` prints exactly:
+
+```
+upstream_repo
+```
+
+not `upstream_repo/<anything>`. So for a filter pattern:
+
+| Compile input | Bump reports | `X/**` matches? | Needs |
+|---|---|---|---|
+| `upstream_repo` (a submodule itself) | `upstream_repo` | **No** -- no `upstream_repo/` prefix | bare `upstream_repo` |
+| `libraries` (a directory *containing* submodules) | `libraries/libimobiledevice` | **Yes** | `libraries/**` |
+
+So `libraries/**` is correct, and `upstream_repo` is correctly bare. **No submodule bump is needed
+to prove this** -- the path shape is already in the history, and bumping one purely to test CI
+would change the shipped binary for no information.
+
+**The guard did not know this.** `covered()` stripped `/**` and compared base names, so rewriting
+the bare `upstream_repo` entry as `upstream_repo/**` -- which looks like a tidy-up, since every
+other entry is a glob -- still printed `ok ... covered by 'upstream_repo/**'` and exited 0, while
+the trigger would have silently stopped firing. Fixed: the guard now reads gitlinks from
+`git ls-files -s` (mode 160000) and requires an exact match for any compile input that is itself a
+submodule, while still allowing globs to cover submodules *nested* inside a covered directory.
+
+Both directions mutation-tested: `upstream_repo` -> `upstream_repo/**` now fails naming the
+submodule and the glob; dropping `libraries/**` still fails as before.
+
+That is the third time in this session a check shared a blind spot with the thing it checks.
+
 ### FIXED 2026-09-14: the sockaddr layout bug above, now patched -- and there were THREE sites, not two
 
 Option 2 from the section above, implemented. The bug is no longer inferred from reading two trees:
