@@ -1029,6 +1029,43 @@ independently runs `avahi-browse` to confirm the service is published, checks th
 endpoint, and tracks when a refresh last actually succeeded. Nothing inside AltServer can be
 trusted to report its own health.
 
+## Credential sweep, 2026-09-15 -- where the operator's data actually lives
+
+The repo is clean and its history was rewritten (see the commits above). This section records the
+OTHER half, which matters more: credentials do not live in the repo, they live on the server. The
+sweep that produced this was cut short by a session limit, so the 14 items below were found but
+NOT independently verified -- except the four marked (verified), which were checked directly
+against the source.
+
+**Not leaks -- working state. Deleting these breaks unattended refresh.** Remove them only when
+decommissioning, or if the Apple ID is believed compromised.
+
+| What | Where | Consequence if removed |
+|---|---|---|
+| Apple ID password (verified) | container env + Portainer's saved stack definition. `deploy/altserver-stack.yml:197-199` uses `${VAR:-}` interpolation, so the REPO holds no value | re-enter to install again |
+| Signing cert + private key (verified) | `<team-id>.p12` under `AltServerData/Certificates`, `AltServerApp.cpp:1969`, in the `altserver-data` volume | forces re-sign-in; revokes nothing by itself |
+| Apple machine identity (verified) | `anisette-config` volume at `/home/Alcoholic/.config/anisette-v3` | re-provisions; can trip Apple rate limits |
+| iPhone pairing record | `/var/lib/lockdown` on the host | **breaks wireless refresh** -- needs USB re-pair |
+
+**Stray copies, safe to delete.** None of these are needed by the running stack:
+
+- a browser-saved password for `http://<host>:8099` -- the install form is plain HTTP
+- `~/.bash_history` / `~/.zsh_history` lines from any bare-metal `AltServer -p "<password>"` run
+- `~/AltServerData/` left by a bare-metal BOOTSTRAP Phase 4 install (a second copy of the p12)
+- `~/anisette-state.tgz`, `~/lockdown-backup*.tgz` if those backups were ever taken
+- UUID-named leftovers in a container's `/tmp` from an interrupted install (hold `ALTCertificate.p12`)
+
+**Logs, safe to truncate, no state lost.** A sign-in prints the full Apple account record and
+bearer tokens including a one-year `com.apple.gs.icloud.auth` (verified:
+`AppleAPI+Authentication.cpp:522` `odslog("Data: " ...)`), and every refresh prints the anisette
+identity (verified: `src/AnisetteDataManager.cpp:191`). Both reach `docker logs`, which the
+json-file driver persists under `/var/lib/docker/containers/<id>/`. `web/installer.py` redacts what
+reaches the BROWSER; it does not touch what reaches `docker logs`.
+
+**One real exposure worth fixing:** `altserver-web` binds `0.0.0.0:8099`, and the status page
+publishes the device UDID and anisette Device-Id to anyone on the LAN. Bind `127.0.0.1` and use an
+SSH tunnel -- already the documented recommendation for the password form, and it applies here too.
+
 ## Repository audit, 2026-09-15
 
 Run after `bd/revival` merged into `new`, to answer two questions: is every tracked file
