@@ -23,7 +23,7 @@ AltServer for AltStore, but on-device.
 | GrandSlam `429` on connection reuse | **Fixed**; proven with a zero-credential probe |
 | corecrypto build (#111) | **Fixed.** The buildenv image is rebuildable from source again |
 | iOS 26 launch crash (#131) | Fixed in code; AltStore **installs and launches** |
-| Wireless refresh | netmuxd ships in the stack; wireless lockdown confirmed reachable on iOS 26 |
+| Wireless refresh | netmuxd ships in the stack; the sockaddr-layout bug that broke every Wi-Fi connection is **fixed**, but not yet proven against a phone |
 | AltJIT on iOS 17+ | **Not supported.** Needs personalised DDI, TSS signing and a RemoteXPC tunnel. Use [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) |
 
 ---
@@ -190,8 +190,21 @@ This project never forked AltServer-Windows. `upstream_repo/` is a submodule of 
 **rewrites those sources at compile time** — `makefiles/rewrite_altserver_source.py` and friends
 convert `L"…"` to `U("…")`, `std::wstring` to `std::string`, `boost::filesystem` to
 `std::filesystem`, strip the Win32 GUI and splice in a console implementation. Win32 gaps are
-filled by `-include shims/windows_shim.h`. Patches to vendored code live in those rewriters rather
-than in the submodule, and each one fails the build loudly if its pattern stops matching.
+filled by `-include shims/windows_shim.h`.
+
+Patches to vendored code live in those rewriters rather than in the submodule, because the
+libraries are submodules: an edit in place cannot be committed here — only the submodule pointer
+would move, to a commit that does not exist upstream, breaking every fresh clone.
+
+| Rewriter | Fails the build if its pattern stops matching |
+|---|---|
+| `makefiles/rewrite_altserver_source.py` | **No.** It has no `raise`, `assert` or `sys.exit` at all — a substitution that silently stops matching produces a quietly wrong binary |
+| `makefiles/AltSign-build/rewrite_altsign_source.py` | Yes |
+| `makefiles/AltSign-build/rewrite_ldid_source.py` | Yes |
+| `makefiles/libimobiledevice-build/rewrite_idevice_source.py` | Yes |
+
+That first row is a real gap, not a stylistic one: it is the largest rewriter and it patches the
+code that talks to Apple. Fixing it is on the TODO list in [REVIVAL.md](REVIVAL.md).
 
 ### Building the buildenv image
 

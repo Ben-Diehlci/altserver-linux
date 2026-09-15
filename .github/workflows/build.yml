@@ -58,6 +58,16 @@ jobs:
           python3 -m pip install --quiet --disable-pip-version-check pyyaml
           python3 tests/check_compose.py
 
+      # A usbmux network address is a raw sockaddr in the layout of whichever host produced it, and
+      # the vendored parser understood only the BSD one -- so every Wi-Fi refresh failed as a device
+      # fault while the phone sat plainly visible in the device list. Needs the real submodule
+      # source, because the guard also proves the rewriter still matches it.
+      - name: Fetch the libimobiledevice submodule
+        run: git submodule update --init --depth 1 libraries/libimobiledevice
+
+      - name: usbmux network addresses parse in both sockaddr layouts
+        run: python3 tests/check_conn_data_layout.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"
