@@ -23,7 +23,7 @@ AltServer for AltStore, but on-device.
 | GrandSlam `429` on connection reuse | **Fixed**; proven with a zero-credential probe |
 | corecrypto build (#111) | **Fixed.** The buildenv image is rebuildable from source again |
 | iOS 26 launch crash (#131) | Fixed in code; AltStore **installs and launches** |
-| Wireless refresh | netmuxd ships in the stack; the sockaddr-layout bug that broke every Wi-Fi connection is **fixed**, but not yet proven against a phone |
+| Wireless refresh | **Working.** The sockaddr-layout bug that broke every Wi-Fi connection is fixed and confirmed on a real device: profiles refresh over Wi-Fi with no cable |
 | AltJIT on iOS 17+ | **Not supported.** Needs personalised DDI, TSS signing and a RemoteXPC tunnel. Use [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) |
 
 ---
