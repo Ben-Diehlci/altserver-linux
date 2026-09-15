@@ -293,7 +293,7 @@ be prompted for a **2FA code** — type it at the prompt.
 2. **Settings → General → VPN & Device Management** → trust the developer certificate.
 3. **Open AltStore.** This is the real test.
 
-**If it installs but crashes instantly at launch, that is issue #131** — the fix in `65a5727` did
+**If it installs but crashes instantly at launch, that is issue #131** — the fix in `0e8090b` did
 not work, and that is exactly the unverified assumption. Report the symptom; do not conclude the
 deployment failed.
 

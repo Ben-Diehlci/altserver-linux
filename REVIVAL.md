@@ -82,33 +82,33 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | `df570bd` | **CI unbroken.** Dead `gautamkrishnar/keepalive-workflow@master` removed; five actions off retired node12/16; `::set-output` → `$GITHUB_OUTPUT`; per-job `permissions`; `sync_upstream` boolean bug. |
 | `6cd382a` | **node24 bump**, part 1: checkout v4→v7, setup-qemu v3→v4, login-action v3→v4, gh-release v2→v3. |
 | `8494e36` | **node24 bump**, part 2: third-party uploader → `actions/upload-artifact@v7`, download-artifact v4→v8, matrix restructured to carry an `arch` label. |
-| `a266861` + `15e5be6` | **corecrypto: all 3 layers fixed — CLOSES #111.** Full `make; make install` exits 0. The buildenv image is rebuildable from source again. |
-| `f2540f3` | **Bootstrap blockers cleared:** PR #135 client-info sanitization (with an `ALTSERVER_NO_CLIENTINFO_SANITIZE` escape hatch), and the getopt `-a` fallthrough / uninitialised argv pointers / unreachable `-h`. |
-| `65a5727` | **#131 fixed** via the ldid rewriter: capture the SHA-256 CodeDirectory hash before truncating to 20 bytes. Build-verified; **not** verified on an iOS 26 device. |
-| `654907a` | **mDNS advertisement failure made loud.** Both failure paths verified; success path NOT verified locally — no working avahi in the build container. Must be confirmed on the real host. |
+| `a266861` + `790973d` | **corecrypto: all 3 layers fixed — CLOSES #111.** Full `make; make install` exits 0. The buildenv image is rebuildable from source again. |
+| `04dd7ee` | **Bootstrap blockers cleared:** PR #135 client-info sanitization (with an `ALTSERVER_NO_CLIENTINFO_SANITIZE` escape hatch), and the getopt `-a` fallthrough / uninitialised argv pointers / unreachable `-h`. |
+| `0e8090b` | **#131 fixed** via the ldid rewriter: capture the SHA-256 CodeDirectory hash before truncating to 20 bytes. Build-verified; **not** verified on an iOS 26 device. |
+| `04e928a` | **mDNS advertisement failure made loud.** Both failure paths verified; success path NOT verified locally — no working avahi in the build container. Must be confirmed on the real host. |
 | `b885501` | **anisette error handling** rewritten; `mktime`→`timegm`; `ResetProvisioning` Windows-path bug. Closes #104. |
 | `301eb8b` | **Daemon warns at startup** when no anisette server is configured, instead of looking healthy and failing at first use. Warns rather than exits: only `AnisetteDataRequest` needs anisette; AltJIT and profile requests do not. |
-| `4f5c086` | **Anisette as a Portainer stack** — and the volume path the upstream README gets wrong (`lib/` holds only the `.so` cache; the identity is one level up). |
-| `e2a2c36` | **Non-200 from Apple's auth endpoint reported** instead of surfacing as "invalid response". The status was logged then discarded, so a 429 became a plist parse failure. |
-| `f88d87f` | `--help` registered as a long option — it was documented and handled but missing from `long_options`, so it hit the error path. |
-| `22ea3fc` | Pairing wizard detects an existing backup, and only counts one containing **both** plists. |
-| `d0495b3` | README: removed instructions that were actively wrong (missing `cd build`, the stale `-mno-default` ARM warning, corecrypto steps for a distribution Apple no longer ships). |
-| `9507c25` | **GrandSlam 429 fixed.** `gsaClient()` returns a fresh client per call, so each request opens its own connection. Proven by probe, then confirmed by a real sign-in. |
-| `3b3f672` + `4be5f9f` | **CI iteration cost cut.** `fail-fast: false`, and amd64-only on branch pushes with the full matrix on tags / schedule / `all_arches`. |
-| `dcac3de` | **Credentials from the environment** (`ALTSERVER_UDID` / `_APPLE_ID` / `_APPLE_PASSWORD`), so a detached container works and the password is not in `ps`. |
-| `7b8a3eb` | **Containerised.** Multi-stage `Dockerfile` bundling every runtime prerequisite and verifying `libdns_sd.so` loads at build time; `deploy/altserver-stack.yml`; `build_image.yml` publishing to the fork's OWN namespace. |
-| `4f97ab4` | **Named volumes** — no host `mkdir`, and no `chown`, since a fresh volume inherits the image path's ownership. |
-| `41d7a76` | **AltStore IPA fetched automatically** on start, resolved from AltStore's own catalogue so it is always current. Idempotent, atomic, verifies a `Payload/*.app`, non-fatal on failure. |
-| `732f5a5` `63b27a9` `9b57afd` | **Setup web UI**, three slices: status dashboard, pairing wizard, and install with in-browser 2FA entry. |
-| `f3cbbf3` | Web UI runs as a stack service on `:8099`; image gains the tools its checks shell out to. |
-| `308c9b9` | **`ThreadingHTTPServer`** — the single-threaded server was serialising every page behind slow checks. Measured: a 10s request no longer blocks others. |
-| `a3937e6` | Install page auto-populates the UDID from `/api/pairing`. |
-| `64d7441` | Two status checks that reported nonsense: the process check was a PID-namespace false negative, and the clock check used `timedatectl`, which cannot work in a container. |
-| `af2be1e` | **mDNS from a container needs AppArmor rules.** Tested profile + installer; see below. |
-| `1bd0183` | README rewritten for the current state, leading with an honest status table. |
-| `2a2e99e` | **JS syntax error fixed** — a literal newline in a string literal was killing every page's script block. All three pages now `node --check`ed. |
-| `b98a01e` | **`paths:` filter fixed** — `web/**` changes were not rebuilding the image, so five commits of fixes never shipped. |
-| `bb4713d` | REVIVAL.md: both findings written up. |
+| `3cd30ac` | **Anisette as a Portainer stack** — and the volume path the upstream README gets wrong (`lib/` holds only the `.so` cache; the identity is one level up). |
+| `118e9fb` | **Non-200 from Apple's auth endpoint reported** instead of surfacing as "invalid response". The status was logged then discarded, so a 429 became a plist parse failure. |
+| `061af4c` | `--help` registered as a long option — it was documented and handled but missing from `long_options`, so it hit the error path. |
+| `3f29bcb` | Pairing wizard detects an existing backup, and only counts one containing **both** plists. |
+| `725677d` | README: removed instructions that were actively wrong (missing `cd build`, the stale `-mno-default` ARM warning, corecrypto steps for a distribution Apple no longer ships). |
+| `eb053f1` | **GrandSlam 429 fixed.** `gsaClient()` returns a fresh client per call, so each request opens its own connection. Proven by probe, then confirmed by a real sign-in. |
+| `38bddab` + `023755c` | **CI iteration cost cut.** `fail-fast: false`, and amd64-only on branch pushes with the full matrix on tags / schedule / `all_arches`. |
+| `4f40fdd` | **Credentials from the environment** (`ALTSERVER_UDID` / `_APPLE_ID` / `_APPLE_PASSWORD`), so a detached container works and the password is not in `ps`. |
+| `1fe89a3` | **Containerised.** Multi-stage `Dockerfile` bundling every runtime prerequisite and verifying `libdns_sd.so` loads at build time; `deploy/altserver-stack.yml`; `build_image.yml` publishing to the fork's OWN namespace. |
+| `7f2032e` | **Named volumes** — no host `mkdir`, and no `chown`, since a fresh volume inherits the image path's ownership. |
+| `215885a` | **AltStore IPA fetched automatically** on start, resolved from AltStore's own catalogue so it is always current. Idempotent, atomic, verifies a `Payload/*.app`, non-fatal on failure. |
+| `5b4fe84` `af35345` `5e41eee` | **Setup web UI**, three slices: status dashboard, pairing wizard, and install with in-browser 2FA entry. |
+| `663cfaf` | Web UI runs as a stack service on `:8099`; image gains the tools its checks shell out to. |
+| `9baa62b` | **`ThreadingHTTPServer`** — the single-threaded server was serialising every page behind slow checks. Measured: a 10s request no longer blocks others. |
+| `d7e3da5` | Install page auto-populates the UDID from `/api/pairing`. |
+| `a79aab5` | Two status checks that reported nonsense: the process check was a PID-namespace false negative, and the clock check used `timedatectl`, which cannot work in a container. |
+| `70b646e` | **mDNS from a container needs AppArmor rules.** Tested profile + installer; see below. |
+| `f6e98de` | README rewritten for the current state, leading with an honest status table. |
+| `501e40f` | **JS syntax error fixed** — a literal newline in a string literal was killing every page's script block. All three pages now `node --check`ed. |
+| `f7f3130` | **`paths:` filter fixed** — `web/**` changes were not rebuilding the image, so five commits of fixes never shipped. |
+| `503225f` | REVIVAL.md: both findings written up. |
 | *(this)* | **Two CI guards added** (`tests/`), each verified to fail by reintroducing the original bug. |
 | *(this)* | **netmuxd added to the image and the stack** — wireless device transport, the last missing piece for unattended refresh. |
 
@@ -975,7 +975,7 @@ Ranked. These are the ways it stops refreshing with nobody finding out.
    (`RefreshAllAppsIntent.swift:187`, `ignoresServerNotFoundError = false`) is a requirement.
 2. **`DNSServiceRegister result: 0` is not proof of publication.** A user in `closed_issue_0051`
    got result 0 with avahi-daemon *stopped* — consistent with avahi-compat deferring via
-   `AVAHI_CLIENT_NO_FAIL`. **Our committed fix (`654907a`) does not close this**: it catches a
+   `AVAHI_CLIENT_NO_FAIL`. **Our committed fix (`04e928a`) does not close this**: it catches a
    child that exits, and the `sys.exit` addition catches a non-zero result, but it cannot catch
    avahi *lying* about success. Only an out-of-band `avahi-browse` from another host can.
 3. **avahi restarts and nothing re-registers.** `StartAdvertising` is called exactly once
@@ -1061,7 +1061,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       No one has reported a completed AltServer-Linux sign-in in 2026 |" versus README.md:21 "|
       Apple sign-in | **Working**, including 2FA, team lookup, device registration and certificate
       issuance |" and REVIVAL.md:1102 "**Phase 4 — install: sign-in WORKS.**" BOOTSTRAP.md:296-298
-      still frames #131 as an open unknown ("the fix in `65a5727` did not work, and that is exactly
+      still frames #131 as an open unknown ("the fix in `0e8090b` did not work, and that is exactly
 
 - [ ] **A3. "No host preparation is needed" is wrong, and the missing host paths are silently created as directories that permanently break mDNS**
       `README.md` -- fix
@@ -1252,7 +1252,7 @@ confirm. B is a small patch. D is a substantial one. None are blocked by anythin
 
 ### Bootstrap progress
 
-- **Phase 0 — binary: DONE.** `AltServer-x86_64` from a green CI run on `8997649`, verified by
+- **Phase 0 — binary: DONE.** `AltServer-x86_64` from a green CI run on `dbb9977`, verified by
   string check (contains the new anisette text; the dead armconverter default is absent).
 - **Phase 1 — host prereqs: DONE.** avahi-daemon, avahi-utils, libavahi-compat-libdnssd-dev,
   usbmuxd, libimobiledevice-utils. `CDLL('libdns_sd.so')` loads.
@@ -1534,7 +1534,7 @@ much of this session was spent on silent failures — visible health, i.e. is th
 is the anisette server reachable, when did the last successful refresh happen, and when do the
 current certificates expire.
 
-9. ~~**Accept the Apple ID password from somewhere other than argv.**~~ **DONE** — `dcac3de`. `-p` puts the password in
+9. ~~**Accept the Apple ID password from somewhere other than argv.**~~ **DONE** — `4f40fdd`. `-p` puts the password in
    `ps` output for the life of the process and in shell history. An `ALTSERVER_APPLE_PASSWORD`
    env var, or reading from stdin when `-p` is absent, would fix it. Small, and it matters more
    once this runs unattended, where the password has to live somewhere anyway.
