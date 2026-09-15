@@ -14,7 +14,7 @@
 # chown a bind mount would have required is unnecessary.
 #
 # The one genuine prerequisite is outside Docker's reach: the phone must have been paired over USB
-# once (BOOTSTRAP.md Phase 3) so /var/lib/lockdown holds a pairing record. Wireless pairing is not
+# once (README.md, Setup step 2) so /var/lib/lockdown holds a pairing record. Wireless pairing is not
 # possible in this build.
 #
 # MIGRATING AN EXISTING BIND-MOUNT DEPLOYMENT: if you already have a provisioned identity at
@@ -128,8 +128,8 @@ services:
     # image line and uncomment build: — useful if you want a arch other than the published one.
     image: ghcr.io/ben-diehlci/altserver-linux:latest
     # build:
-    #   context: .
-    #   dockerfile: Dockerfile
+    #   context: ..
+    #   dockerfile: docker/Dockerfile
     #   args:
     #     BUILDER: ghcr.io/nyamisty/altserver_builder_alpine_amd64
     container_name: altserver
@@ -192,7 +192,7 @@ services:
       ALTSTORE_SKIP_FETCH: "0"
 
       # Credentials. Prefer putting these in Portainer's stack environment variables rather than
-      # committing them. They are only needed for sign-in; see BOOTSTRAP.md.
+      # committing them. They are only needed for sign-in; see README.md, Setup step 4.
       # Passing them here beats -p on a command line, which exposes the password in `ps`.
       ALTSERVER_UDID: "${ALTSERVER_UDID:-}"
       ALTSERVER_APPLE_ID: "${ALTSERVER_APPLE_ID:-}"
@@ -231,7 +231,7 @@ services:
       - /var/lib/dbus/machine-id:/var/lib/dbus/machine-id:ro
 
     # No IPA argument => daemon mode. The first-time install is a separate one-off run; see
-    # BOOTSTRAP.md Phase 4. You can do it from Portainer's container console:
+    # README.md, Setup step 4. You can do it from Portainer's container console:
     #   AltServer -u "$ALTSERVER_UDID" -a "$ALTSERVER_APPLE_ID" -p "$ALTSERVER_APPLE_PASSWORD" /data/AltStore.ipa
     # It needs an interactive console because the 2FA code is read from stdin.
     command: []

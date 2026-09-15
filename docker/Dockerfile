@@ -107,14 +107,15 @@ RUN set -eux; \
 
 # Fetches the current AltStore Classic IPA, resolving the URL from AltStore's own catalogue rather
 # than a hardcoded one -- a pinned URL silently installs an ever-older AltStore.
-# The setup web UI: status dashboard, pairing wizard and the install flow. Run it with
-#   docker exec altserver python3 /opt/altserver-web/server.py --host 0.0.0.0
-# It is NOT started automatically -- it accepts an Apple ID password, so exposing it should be a
-# deliberate act rather than a side effect of deploying.
+# The setup web UI: status dashboard, pairing wizard and the install flow. This image only
+# CARRIES it -- the entrypoint runs AltServer, not the UI. deploy/altserver-stack.yml starts it as
+# a separate `altserver-web` service from the same image. Running it by hand:
+#   docker exec altserver python3 /opt/altserver-web/server.py --host 127.0.0.1
+# Bind loopback unless you mean otherwise: it accepts an Apple ID password over plain HTTP.
 COPY web/ /opt/altserver-web/
 
 COPY web/fetch_altstore.py /usr/local/bin/fetch-altstore
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
+COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 RUN chmod +x /usr/local/bin/fetch-altstore /usr/local/bin/docker-entrypoint
 
 # AltServerApp writes to the RELATIVE path ./AltServerData, resolved against the working

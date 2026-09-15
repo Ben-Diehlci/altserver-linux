@@ -95,7 +95,8 @@ void print_help() {
 			"  - ALTSERVER_NO_CLIENTINFO_SANITIZE: set to 1 to stop rewriting com.apple.dt.Xcode\n"
 			"          to com.apple.akd in X-MMe-Client-Info. Only useful for diagnosing sign-in\n"
 			"          failures; leave unset normally.\n"
-			"  - ALTSERVER_NO_SUBSCRIBE: (*unused*) Please enable this for usbmuxd server that do not correctly usbmuxd_listen interfaces\n"
+			"  - ALTSERVER_NO_SUBSCRIBE: set to skip usbmuxd_subscribe and poll the device list instead.\n"
+			"          For mux implementations that do not report attach events correctly.\n"
 			);
 }
 

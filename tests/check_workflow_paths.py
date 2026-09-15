@@ -28,7 +28,7 @@ import subprocess
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-DOCKERFILE = os.path.join(ROOT, "Dockerfile")
+DOCKERFILE = os.path.join(ROOT, "docker", "Dockerfile")
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "build_image.yml")
 
 

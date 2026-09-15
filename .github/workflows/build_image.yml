@@ -13,9 +13,8 @@ on:
       - new
       - bd/revival
     paths:
-      - 'Dockerfile'
+      - 'docker/**'
       - '.dockerignore'
-      - 'docker-entrypoint.sh'
       # The web UI is COPIED into the image, so changes to it must rebuild it. Omitting this
       # meant five commits of web fixes silently never reached a published image, and the
       # deployed stack kept serving known-broken code with no indication anything was stale.
@@ -24,7 +23,7 @@ on:
       - 'shims/**'
       - 'makefiles/**'
       # The same failure as web/** above, one level down. The libraries/ submodules
-      # (libimobiledevice, libusbmuxd, libplist, libimobiledevice-glue, ideviceinstaller) and the
+      # (libimobiledevice, libusbmuxd, libplist, libimobiledevice-glue) and the
       # plain sources in libraries/dnssd_loader are COMPILED into the -static binary by the build
       # stage's `make`, so bumping one changes the SHIPPED BINARY. Without this entry the image
       # would keep the old binary and nothing would indicate it was stale.
@@ -77,7 +76,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ./Dockerfile
+          file: ./docker/Dockerfile
           build-args: |
             BUILDER=ghcr.io/nyamisty/altserver_builder_alpine_amd64
           platforms: linux/amd64

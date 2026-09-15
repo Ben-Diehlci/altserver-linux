@@ -18,9 +18,9 @@ WHY THIS EXISTS. AltServer cannot report its own health, and neither can the pho
 Net effect without something like this: a deployment stops refreshing and the first symptom is an
 app that will not open, seven days later, with no signal anywhere in between.
 
-SCOPE. Read-only diagnostics. It deliberately does NOT sign in or handle 2FA yet -- that needs a
-supervisor that owns the AltServer child's stdin, and it should not be built against an
-authentication flow that is not yet working.
+SCOPE. Status and pairing are read-only. /install is not: it signs in and takes the 2FA code in
+the browser, via installer.py, which supervises an AltServer child and owns its stdin. That is
+how a 2FA code reaches a `std::cin` read in a container with no terminal.
 
 Bind to 127.0.0.1 unless you understand the consequences: this reports device identifiers and
 should not be exposed to the LAN, and never to the internet.

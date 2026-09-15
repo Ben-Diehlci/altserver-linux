@@ -241,7 +241,8 @@ jobs:
         ls build_release
         if [ "$(ls -A build_release)" ]; then exit 0; else exit 1; fi
     - name: Release
-      uses: softprops/action-gh-release@v3
+      # Pinned to a commit, not the v3 tag: a tag is mutable, and this job publishes releases.
+      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
       with:
         files: build_release/*
       env:
@@ -265,8 +266,10 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git submodule update --remote -- upstream_repo
           git commit -m "[server] Sync Upstream Repo commit" upstream_repo
+      # Plain git push rather than a third-party action. ad-m/github-push-action@master was
+      # unpinned -- a floating branch ref from another account, running in a job that holds
+      # `contents: write` and is handed GITHUB_TOKEN. Whatever that branch pointed at on the day
+      # would have run with permission to rewrite this repo. actions/checkout already persists
+      # credentials, so nothing is gained by delegating the push.
       - name: Push changes
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ github.ref }}
+        run: git push origin HEAD:${{ github.ref }}

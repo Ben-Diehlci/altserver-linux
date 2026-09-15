@@ -263,9 +263,13 @@ workflow would be skipped by precisely the bug it detects.
 The `paths:` filter fixed above listed `src/**`, `shims/**`, `makefiles/**`, `Makefile`,
 `upstream_repo` and `web/**` -- but **not `libraries/**`**. `Dockerfile:33` runs
 `make -f ../Makefile`, and `makefiles/main.mak:9` points `LIB_DIR` straight at `libraries/`, so
-the five vendored submodules (libimobiledevice, libusbmuxd, libplist, libimobiledevice-glue,
-ideviceinstaller) plus the plain sources in `libraries/dnssd_loader` are compiled **into the
-`-static` binary**.
+the four vendored submodules (libimobiledevice, libusbmuxd, libplist, libimobiledevice-glue)
+plus the plain sources in `libraries/dnssd_loader` are compiled **into the `-static` binary**.
+
+(This originally said *five*, counting `ideviceinstaller`. It was never compiled -- it is a
+standalone CLI with its own `main()`, unlinkable into AltServer even deliberately -- and the audit
+below removed the submodule. The conclusion stands regardless: four of them ARE compiled, so
+`libraries/**` still has to be in the filter.)
 
 So bumping a submodule -- the single most likely reason to touch that tree, and exactly what the
 netmuxd/`libimobiledevice` compatibility work above leads to -- would have changed the shipped
@@ -1120,7 +1124,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
 
 ### Medium severity
 
-- [ ] **A5. libraries/ideviceinstaller is a submodule nothing compiles, and two places assert that it does**
+- [x] **A5. FIXED 2026-09-15. libraries/ideviceinstaller is a submodule nothing compiles, and two places assert that it does**
       `.gitmodules` -- delete
       VERDICT: dead submodule, cloned on every CI checkout, and actively mis-described. Evidence it
       is never built: - makefiles/libimobiledevice-build/libimobiledevice-files.mak lists the
@@ -1135,7 +1139,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       `netmuxd`** (>= 0.3). They collide: stock usbmuxd never emits ConnectionType `Network`, and
       netmuxd binds `/var/run/usbmuxd` by default.
 
-- [ ] **A7. The published image is amd64-only, and nothing tells a Raspberry Pi user that before the pull fails**
+- [x] **A7. FIXED 2026-09-15. The published image is amd64-only, and nothing tells a Raspberry Pi user that before the pull fails**
       `README.md` -- document
       Verified against the registry: `ghcr.io/ben-diehlci/altserver-linux:latest` is public (good)
       but its OCI index carries one platform, linux/amd64 — build_image.yml:83 sets `platforms:
@@ -1144,7 +1148,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       README.md:159-161 advertises four-architecture binaries and build.yml:151-154 keeps
       aarch64/armv7/i386 builders precisely because "dropping them entirely would make this fork
 
-- [ ] **A8. The commented-out build fallback in the stack uses a context that resolves to deploy/, so it cannot work as written**
+- [x] **A8. FIXED 2026-09-15. The commented-out build fallback in the stack uses a context that resolves to deploy/, so it cannot work as written**
       `deploy/altserver-stack.yml` -- fix
       deploy/altserver-stack.yml:130-134 offers `build:\n context: .\n dockerfile: Dockerfile` as
       the documented escape hatch ("To build from source instead, comment the image line and
@@ -1180,7 +1184,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       dmsToken|adsid|DsPrsId|phoneNumber|<data>|com.apple.gs.*</key>|"token"|<key>token</key>|sessio
       nKey|Got token for. But src/AnisetteDataManager.cpp:315 calls `odslog(*anisetteData)`, and the
 
-- [ ] **A12. The getrandom() polyfill leaks a file descriptor on every call and ignores short reads**
+- [x] **A12. FIXED 2026-09-15. The getrandom() polyfill leaks a file descriptor on every call and ignores short reads**
       `shims/old-linux-polyfill.c` -- fix
       Lines 4-21 define a replacement for libc's `getrandom`: ```c ssize_t getrandom(void *buf,
       size_t buflen, unsigned int flags) { int randomData = open("/dev/urandom", O_RDONLY); if
@@ -1191,13 +1195,13 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
 
 ### Low severity
 
-- [ ] **A13. REVIVAL.md TODO item 5 is already done, and its guidance now contradicts the shipped design**
+- [x] **A13. FIXED 2026-09-15. REVIVAL.md TODO item 5 is already done, and its guidance now contradicts the shipped design**
       `REVIVAL.md` -- document
       REVIVAL.md is the project's index of what is left to do, and its neighbours are carefully
       struck through when finished (items 2, 3, 4 and 8 all carry `~~...~~ **DONE**`). Item 5 is
       not, but it has been completed. REVIVAL.md:1285-1289 -- "5.
 
-- [ ] **A14. web/server.py's module docstring denies the sign-in and 2FA feature the same file serves**
+- [x] **A14. FIXED 2026-09-15. web/server.py's module docstring denies the sign-in and 2FA feature the same file serves**
       `web/server.py` -- fix
       web/server.py:21-23: "SCOPE. Read-only diagnostics. It deliberately does NOT sign in or handle
       2FA yet -- that needs a supervisor that owns the AltServer child's stdin, and it should not be
@@ -1206,7 +1210,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       installer.INSTALLER.start at server.py:397-401; web/installer.py is exactly the stdin
       supervisor the docstring says does not exist.
 
-- [ ] **A15. Dockerfile comments describe a web UI that is not started automatically and a fetch step that moved**
+- [x] **A15. FIXED 2026-09-15. Dockerfile comments describe a web UI that is not started automatically and a fetch step that moved**
       `Dockerfile` -- fix
       Dockerfile:110-113: "Run it with `docker exec altserver python3 /opt/altserver-web/server.py
       --host 0.0.0.0` / It is NOT started automatically -- it accepts an Apple ID password, so
@@ -1215,7 +1219,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       stack.yml:250, :320-321), and README.md:46 tells users to open it. The paragraph above it
       (Dockerfile:108-109, "Fetches the current AltStore Classic IPA...") is also orphaned — it sits
 
-- [ ] **A16. An unpinned third-party action with contents:write — ad-m/github-push-action@master**
+- [x] **A16. FIXED 2026-09-15. An unpinned third-party action with contents:write — ad-m/github-push-action@master**
       `.github/workflows/build.yml` -- fix
       Line 263: `uses: ad-m/github-push-action@master`, inside the `update_submodule` job which
       declares `permissions: contents: write` (line 249) and passes `github_token: ${{
@@ -1224,7 +1228,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       deliberately moved to a pinned major during the revival (checkout@v7, upload-artifact@v7,
       download-artifact@v8, setup-qemu-action@v4, action-gh-release@v3 — recorded in REVIVAL.md's
 
-- [ ] **A17. --help calls ALTSERVER_NO_SUBSCRIBE "(*unused*)" but the build wires it up**
+- [x] **A17. FIXED 2026-09-15. --help calls ALTSERVER_NO_SUBSCRIBE "(*unused*)" but the build wires it up**
       `src/AltServerMain.cpp` -- fix
       Line 98 of the usage text: ``` " - ALTSERVER_NO_SUBSCRIBE: (*unused*) Please enable this for
       usbmuxd server that do not correctly usbmuxd_listen interfaces\n" ``` It is not unused.
@@ -1489,11 +1493,11 @@ Consequences, and they are exactly the wrong shape for a headless box:
    `rewrite_altsign_source.py` does no backslash translation. Harden `removePart()` to assert
    each regex matched before attempting this. **Cross-check against `~/Local Work/AltStore`,
    which has the current AltSign.**
-5. **README pass.** Merge PR #124 (`cd build`), apply the same fix to the cpprestsdk step, use
-   the exact seds from `buildenv/Dockerfile`, lead with the `docker run` command CI uses,
-   document `chmod +x` and the python3/`libdns_sd.so`/avahi requirements. Closes #124, #120,
-   partially #111. Do **not** rewrite the Wi-Fi section to "keep usbmuxd running" — netmuxd
-   binds the unix socket by default and the only success report in #77 says the opposite.
+5. ~~**README pass.**~~ **DONE** — and its closing warning has since been inverted by the code.
+   It said: do **not** rewrite the Wi-Fi section to "keep usbmuxd running", because netmuxd binds
+   the unix socket by default. True of stock netmuxd, false of this stack, which gives netmuxd its
+   own `--socket-path` precisely so the host usbmuxd keeps the cable. Keeping usbmuxd running is
+   now the correct advice and README says so. Closed #124, #120, partially #111.
 6. **`build_docker.yml` namespace.** Pushes to `ghcr.io/nyamisty/*`, which this fork's token
    cannot write to, so it fails on the fork regardless. Only worth fixing if we decide to own
    our own builder images. Separately, `build_docker.sh` passes no `--platform`, so all four
