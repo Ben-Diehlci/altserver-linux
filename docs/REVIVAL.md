@@ -1434,7 +1434,9 @@ Consequences, and they are exactly the wrong shape for a headless box:
 
 ### Next up
 
-0. **Deploy and prove the wireless-refresh fix.** The sockaddr patch is written, builds clean and
+0. ~~**Deploy and prove the wireless-refresh fix.**~~ **DONE 2026-09-14** -- a refresh triggered
+   from AltStore removed both old profiles and installed two with fresh UUIDs over Wi-Fi, no cable
+   attached, with netmuxd sending byte-identical connection data before and after. Original note: The sockaddr patch is written, builds clean and
    is mutation-tested, but has never run against the phone. Rebuild the image, redeploy the stack,
    trigger a refresh from AltStore, and confirm `Failed to handle request:There was an error
    connecting to the device.` is gone. Remember that `idevice_id -l` and the status page both use
