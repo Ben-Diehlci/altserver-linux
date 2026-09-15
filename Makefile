@@ -21,8 +21,19 @@ CFLAGS += -DNO_USBMUXD_STUB
 ROOT_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 include $(ROOT_DIR)/makefiles/main.mak
 
-$(BUILD_DIR)/libimobiledevice.a $(BUILD_DIR)/libplist.a :
+# ONE recipe, not two. This used to be a multi-target rule naming both archives, which GNU make
+# expands into two independent targets each carrying the same recursive recipe. Both are .PHONY so
+# both always ran, and libplist.a is reachable through lib_AltSign while libimobiledevice.a is
+# reachable through lib_libimobiledevice -- so under -j, which every shipping build uses, the
+# sub-make ran TWICE CONCURRENTLY. That meant every object in it compiled twice to the same path
+# and `ar rcs` ran twice on the same archive: wasted time, and two cc processes writing one .o is
+# a corruption risk that would surface as an unrelated link error.
+#
+# libplist.a needs no recipe of its own: the sub-make's `all` target builds both archives, so
+# depending on libimobiledevice.a both orders it correctly and produces it.
+$(BUILD_DIR)/libimobiledevice.a :
 	$(MAKE) -f $(ROOT_DIR)/makefiles/libimobiledevice-build/libimobiledevice.mak
+$(BUILD_DIR)/libplist.a : $(BUILD_DIR)/libimobiledevice.a
 lib_libimobiledevice: $(BUILD_DIR)/libimobiledevice.a $(BUILD_DIR)/libplist.a
 lib_libimobiledevice_clean : 
 	$(MAKE) -f $(ROOT_DIR)/makefiles/libimobiledevice-build/libimobiledevice.mak clean

@@ -57,6 +57,15 @@ def sub_literal(text, token, expect):
     return text.replace(token, b'')
 
 
+def replace_exact(text, old, new, expect=1):
+    """Swap a literal for another, asserting how many times it was found."""
+    found = text.count(old)
+    if found != expect:
+        _fail("expected %d occurrence(s) of %r, found %d"
+              % (expect, old.decode('utf-8', 'replace')[:70], found), "literal replacement")
+    return text.replace(old, new)
+
+
 content = re.sub(br'L("([^"\\]|\\.)*")', br'U(\1)', content)
 content = re.sub(br'\n(std::string StringFromWideString.*?\n\{[\s\S]+?\})', br'/*\1*/', content)
 content = re.sub(br'\n(std::wstring WideStringFromString.*?\n\{[\s\S]+?\})', br'/*\1*/', content)
@@ -219,6 +228,25 @@ void AltServerApp::Stop()
 {
 }
 ''')
+
+
+if NAME == 'ServerError.hpp':
+    # InvalidAnisetteData's recovery suggestion is Windows-only advice: it tells the user to
+    # install iTunes and iCloud from Apple rather than the Microsoft Store. On Linux there is no
+    # iTunes to install, and the actual causes are an unreachable or unhealthy anisette server and
+    # clock skew on the anisette host, whose timestamp is forwarded to Apple verbatim.
+    #
+    # It has to be rewritten HERE rather than supplied at the throw site: ServerError::
+    # localizedRecoverySuggestion() returns from this case directly, so stuffing a
+    # NSLocalizedRecoverySuggestionErrorKey into userInfo never reaches the default branch.
+    # AltServerApp.cpp:1614 appends whatever this returns to the alert the operator sees.
+    content = replace_exact(
+        content,
+        b'return "Please download the latest versions of iTunes and iCloud directly from Apple, '
+        b'and not from the Microsoft Store.";',
+        b'return "Check the anisette server: that ALTSERVER_ANISETTE_SERVER points at one that is '
+        b'reachable and returns all ten X-Apple-* fields, and that the clock on the anisette host '
+        b'is NTP-synchronised - its timestamp is sent to Apple verbatim.";')
 
 
 # --- Post-conditions on the output -----------------------------------------------------------

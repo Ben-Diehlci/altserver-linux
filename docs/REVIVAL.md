@@ -1033,7 +1033,15 @@ independently runs `avahi-browse` to confirm the service is published, checks th
 endpoint, and tracks when a refresh last actually succeeded. Nothing inside AltServer can be
 trusted to report its own health.
 
-## Credential sweep, 2026-09-15 -- where the operator's data actually lives
+## Credential sweep, 2026-09-15
+
+**Tooling:** [`deploy/credential-hygiene.sh`](../deploy/credential-hygiene.sh) audits every
+location below and can clear the safe ones. Report-only by default; `--clean-logs` truncates
+container logs, `--clean-strays` removes leftover copies. It never prints a secret value, and no
+flag touches working state.
+
+### Detail
+ -- where the operator's data actually lives
 
 The repo is clean and its history was rewritten (see the commits above). This section records the
 OTHER half, which matters more: credentials do not live in the repo, they live on the server. The
@@ -1451,7 +1459,10 @@ Consequences, and they are exactly the wrong shape for a headless box:
    it patches the code that talks to Apple. The other three rewriters all guard themselves; give
    this one the same treatment (a `replace_once`-style helper that counts matches and exits
    non-zero with the reason). README.md's build section documents the gap in the meantime.
-0c. **The libimobiledevice sub-make runs twice on every build.** Pre-existing, found while fixing
+0c. ~~**The libimobiledevice sub-make runs twice on every build.**~~ **DONE 2026-09-15** --
+   `Makefile:24` was a multi-target rule; split so only libimobiledevice.a carries the recursive
+   recipe and libplist.a depends on it. Measured: sub-make invocations 2 -> 1, idevice.c.o
+   compiled once instead of twice, `ar rcs libplist.a` run once instead of twice. Original note: Pre-existing, found while fixing
    the race above. `Makefile:24` is a multi-target `.PHONY` rule, so `libimobiledevice.mak` is
    invoked once for `libimobiledevice.a` and again for `libplist.a`, concurrently under `-j`. Both
    copies compile the same ~40 objects to the same paths and both run `ar rcs` on the same
@@ -1461,7 +1472,11 @@ Consequences, and they are exactly the wrong shape for a headless box:
    `$(BUILD_DIR)/libplist.a : $(BUILD_DIR)/libimobiledevice.a` with the recursive recipe only on
    the latter. Not done here: it changes shared build structure and did not belong in the same
    commit as a correctness fix.
-1. **`ServerError` recovery suggestion is Windows-only advice.** `ServerError.hpp:170` returns
+1. ~~**`ServerError` recovery suggestion is Windows-only advice.**~~ **DONE 2026-09-15** --
+   rewritten in `rewrite_altserver_source.py` (guarded, so an upstream reword fails the build) to
+   name the two causes that actually apply on Linux: an unreachable or unhealthy anisette server,
+   and clock skew on the anisette host. Verified in the linked binary; "Microsoft Store" is gone.
+   Original note: `ServerError.hpp:170` returns
    "download the latest versions of iTunes and iCloud… not from the Microsoft Store" for
    `InvalidAnisetteData`, appended to the CLI alert by `AltServerApp.cpp:1614`. Now newly
    visible, since the anisette work routes failures through `ServerError`. Fix by adding a
