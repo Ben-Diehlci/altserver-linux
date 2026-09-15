@@ -184,9 +184,23 @@ _WIRELESS_ENV = {"USBMUXD_SOCKET_ADDRESS": "UNIX:" + NETMUXD_SOCKET}
 _USB_ENV = {"USBMUXD_SOCKET_ADDRESS": ""}
 
 
-def _devices_via(env):
-    """(udids, note) over one transport. Distinguishes 'no devices' from 'no mux listening'."""
-    rc, out = _run(["idevice_id", "-l"], env=env)
+def _devices_via(env, flag):
+    """(udids, note) over one transport. Distinguishes 'no devices' from 'no mux listening'.
+
+    `flag` is NOT optional and must match the transport. idevice_id's -l and -n are not
+    verbosity switches, they select which transports are enumerated:
+
+        -l  include_usb = 1        (tools/idevice_id.c: case 'l')
+        -n  include_network = 1    (case 'n')
+        neither, with no other args: both
+
+    netmuxd only ever presents the phone as ConnectionType: Network, so `idevice_id -l` against
+    netmuxd's socket returns an empty list NO MATTER WHAT -- the device is there, it is simply not
+    a USB device. This check used -l for the wireless probe and so could never report OK for a
+    wireless-only setup, which is the exact configuration it exists to verify. It read "No device
+    on either transport" while refresh was demonstrably working.
+    """
+    rc, out = _run(["idevice_id", flag], env=env)
     if rc is None:
         return None, out
     # This exact string means libusbmuxd could not reach the socket AT ALL -- a dead or absent
@@ -204,11 +218,15 @@ def check_device():
     udev-activated: it exits when the last cable is unplugged. So a server with no cable has no mux
     at all unless netmuxd is running, and every refresh fails with what looks like a device fault.
     """
-    wireless, wnote = _devices_via(_WIRELESS_ENV)
-    usb, unote = _devices_via(_USB_ENV)
+    # -n for netmuxd (network transport), -l for the host's usbmuxd (USB transport).
+    wireless, wnote = _devices_via(_WIRELESS_ENV, "-n")
+    usb, unote = _devices_via(_USB_ENV, "-l")
 
     if wireless:
-        rc, out = _run(["idevicepair", "validate"], env=_WIRELESS_ENV)
+        # -n is required here for the same reason as above: idevicepair.c:372 selects
+        # IDEVICE_LOOKUP_USBMUX unless it is passed, so without it this validates a USB device
+        # that does not exist on a cable-free server and reports a stale pairing record.
+        rc, out = _run(["idevicepair", "-n", "validate"], env=_WIRELESS_ENV)
         if rc == 0:
             return _result("iPhone reachability", OK, "Reachable over Wi-Fi, pairing valid",
                            "UDID %s via netmuxd%s" % (wireless[0], ", also on USB" if usb else ""))

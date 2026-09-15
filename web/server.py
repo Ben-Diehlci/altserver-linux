@@ -37,6 +37,20 @@ import status_checks  # noqa: E402
 import pairing  # noqa: E402
 import installer  # noqa: E402
 
+# The three pages share a <head> but each has its own <body>, so the tab bar is inserted into each
+# rather than living in one template. aria-current is what actually marks the active tab -- the
+# styling hangs off it, so a screen reader and the stylesheet cannot disagree about which is which.
+_TABS = (("/", "Status"), ("/pairing", "Pairing"), ("/install", "Install AltStore"))
+
+
+def _nav(active_href):
+    links = []
+    for href, label in _TABS:
+        current = ' aria-current="page"' if href == active_href else ""
+        links.append('    <a href="%s"%s>%s</a>' % (href, current, label))
+    return '  <nav class="tabs">\n%s\n  </nav>\n' % "\n".join(links)
+
+
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -83,7 +97,14 @@ PAGE = """<!doctype html>
   .overall.ok{background:var(--okbg);color:var(--ok)} .overall.warn{background:var(--warnbg);color:var(--warn)}
   .overall.fail{background:var(--failbg);color:var(--fail)}
   footer { color:var(--muted); font-size:.8rem; margin-top:1.5rem; }
-  @media (max-width:640px){ .row{flex-wrap:wrap} .name{min-width:0} }
+  nav.tabs { display:flex; flex-wrap:wrap; gap:.15rem; margin-bottom:1.4rem;
+             border-bottom:1px solid var(--line); }
+  nav.tabs a { padding:.5rem .8rem; margin-bottom:-1px; font-size:.9rem; font-weight:600;
+               color:var(--muted); text-decoration:none; border-bottom:2px solid transparent; }
+  nav.tabs a:hover { color:var(--fg); }
+  nav.tabs a[aria-current="page"] { color:var(--fg); border-bottom-color:var(--fg); }
+  @media (max-width:640px){ .row{flex-wrap:wrap} .name{min-width:0}
+                            nav.tabs a{padding:.5rem .6rem} }
 </style>
 </head>
 <body>
@@ -98,7 +119,7 @@ PAGE = """<!doctype html>
   <div id="checks"></div>
   <footer>
     Refreshes every 30s. Read-only &mdash; this page does not sign in or change anything.
-    Raw JSON at <code>/api/status</code>. &middot; <a href="/pairing">Pairing &rarr;</a> &middot; <a href="/install">Install AltStore &rarr;</a>
+    Raw JSON at <code>/api/status</code>.
   </footer>
 </div>
 <script>
@@ -141,7 +162,7 @@ PAIRING_PAGE = PAIRING_PAGE[:PAIRING_PAGE.index("<body>")] + """<body>
 <div class="wrap">
   <header>
     <h1>Pair your iPhone</h1>
-    <div class="meta"><span id="when"></span> &middot; <a href="/">&larr; Status</a></div>
+    <div class="meta"><span id="when"></span></div>
   </header>
   <p class="meta" style="margin-top:-.5rem">
     A USB cable is needed for this once, and only once. Wireless pairing is not supported, but
@@ -188,7 +209,7 @@ INSTALL_PAGE = PAGE[:PAGE.index("<body>")].replace(
 <div class="wrap">
   <header>
     <h1>Install AltStore</h1>
-    <div class="meta"><span id="state">\u2026</span> &middot; <a href="/">&larr; Status</a></div>
+    <div class="meta"><span id="state">\u2026</span></div>
   </header>
 
   <div class="card" id="warnbox">
@@ -304,6 +325,23 @@ poll(); setInterval(poll, 1500);
 </body>
 </html>
 """
+
+
+# Insert the tab bar now that all three pages exist. Doing it here rather than inside each literal
+# keeps one definition of the tabs: PAIRING_PAGE and INSTALL_PAGE are built from PAGE's <head>, so
+# a nav placed in PAGE's <body> would not reach them, and three hand-written copies would drift.
+def _with_nav(page, active_href):
+    marker = '<div class="wrap">'
+    if page.count(marker) != 1:
+        raise AssertionError(
+            "expected exactly one %r in the page for %s, found %d -- the tab bar would be "
+            "inserted in the wrong place or not at all" % (marker, active_href, page.count(marker)))
+    return page.replace(marker, marker + "\n" + _nav(active_href), 1)
+
+
+PAGE = _with_nav(PAGE, "/")
+PAIRING_PAGE = _with_nav(PAIRING_PAGE, "/pairing")
+INSTALL_PAGE = _with_nav(INSTALL_PAGE, "/install")
 
 
 class Handler(BaseHTTPRequestHandler):
