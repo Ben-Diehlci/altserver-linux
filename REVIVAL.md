@@ -1029,6 +1029,176 @@ independently runs `avahi-browse` to confirm the service is published, checks th
 endpoint, and tracks when a refresh last actually succeeded. Nothing inside AltServer can be
 trusted to report its own health.
 
+## Repository audit, 2026-09-15
+
+Run after `bd/revival` merged into `new`, to answer two questions: is every tracked file
+supposed to be here, and could a stranger actually use this repo. 46 agents across four lenses
+(stale files, fresh-clone usability, leaked personal data, repo hygiene); every finding below
+survived an adversarial attempt to refute it, and roughly twice as many were refuted and dropped.
+
+**Infrastructure verified good, so it is not re-checked later:** the GHCR image is public
+(anonymous pull returns 200), all six submodule URLs are reachable, netmuxd v0.4.3's release
+assets return 200 for both architectures, and the digest-pinned anisette image resolves. No
+secrets, build output, caches or editor files are tracked. Every shim -- including the 0-byte
+ones -- and both CI workflows are genuinely reached; `build_docker.yml` is not a duplicate of
+`build_image.yml`, it builds the buildenv toolchain image.
+
+Status key: **OPEN** = not yet addressed. Tick these off in the same commit that fixes them.
+
+### High severity
+
+- [ ] **A1. BOOTSTRAP.md, the doc README sends new users to, is written for one specific machine and cannot be followed by anyone else**
+      `BOOTSTRAP.md` -- fix
+      README.md:10 advertises it as "first-time setup, start to finish", but it is an operator log
+      for one host. BOOTSTRAP.md:7 "Target: Dell OptiPlex 5060 → Proxmox → Ubuntu 24.04 VM
+      (`192.168.9.16`, `ens18`)". BOOTSTRAP.md:21 opens Phase 0 with `git push origin bd/revival` —
+      a stranger has no push access, and that branch is already merged into `new`.
+
+- [ ] **A2. BOOTSTRAP tells the reader the project's core functions are unproven or broken; README says they are fixed**
+      `BOOTSTRAP.md` -- fix
+      Direct contradiction between the two docs a new user reads first. BOOTSTRAP.md:217 (Phase 2
+      "Honest confidence" table): "| This produces a successful Apple sign-in | **Low — unproven.**
+      No one has reported a completed AltServer-Linux sign-in in 2026 |" versus README.md:21 "|
+      Apple sign-in | **Working**, including 2FA, team lookup, device registration and certificate
+      issuance |" and REVIVAL.md:1102 "**Phase 4 — install: sign-in WORKS.**" BOOTSTRAP.md:296-298
+      still frames #131 as an open unknown ("the fix in `65a5727` did not work, and that is exactly
+
+- [ ] **A3. "No host preparation is needed" is wrong, and the missing host paths are silently created as directories that permanently break mDNS**
+      `README.md` -- fix
+      README.md:42-44 "No host preparation is needed — it uses named volumes, and the image bundles
+      every runtime dependency", and README.md:104 says the runtime requirements are "Bundled in the
+      container image. Needed on the host if you run the binary directly". The stack contradicts
+      both: deploy/altserver-stack.yml:220-224 bind-mounts `/var/run/dbus/system_bus_socket` and
+      `/var/run/avahi-daemon/socket` with the comment "the actual publishing is done by the HOST's
+      avahi-daemon", and the Dockerfile installs avahi-utils but no avahi-daemon (Dockerfile:50-64).
+
+- [ ] **A4. BOOTSTRAP and the shipped pairing page tell users to stop usbmuxd and let netmuxd take /var/run/usbmuxd, contradicting the design the stack actually ships**
+      `BOOTSTRAP.md` -- fix
+      BOOTSTRAP.md:318-320: "**Stop `usbmuxd`, start `netmuxd`** (≥ 0.3). They collide: stock
+      usbmuxd never emits ConnectionType `Network`, and netmuxd binds `/var/run/usbmuxd` by
+      default." web/pairing.py:101-102 repeats it inside the UI: "If you are running netmuxd for
+      wireless refresh instead, it OWNS this same socket and usbmuxd must be stopped -- the two
+      collide." Both are wrong for what this repo deploys: deploy/altserver-stack.yml:107-110 runs
+      netmuxd with `--socket-path /run/muxd/usbmuxd`, and README.md:138-140 says "It runs on **its
+
+### Medium severity
+
+- [ ] **A5. libraries/ideviceinstaller is a submodule nothing compiles, and two places assert that it does**
+      `.gitmodules` -- delete
+      VERDICT: dead submodule, cloned on every CI checkout, and actively mis-described. Evidence it
+      is never built: - makefiles/libimobiledevice-build/libimobiledevice-files.mak lists the
+      compile inputs explicitly: libimobiledevice/src, libimobiledevice/common, libimobiledevice-
+      glue/src, libusbmuxd/src, libusbmuxd/common. ideviceinstaller is not among them.
+
+- [ ] **A6. BOOTSTRAP.md Phase 7 instructs the opposite of the netmuxd configuration the stack actually ships**
+      `BOOTSTRAP.md` -- fix
+      BOOTSTRAP.md is reachable -- README.md links it twice as "first-time setup, start to finish"
+      -- but three of its phases now describe a deployment that no longer exists, and Phase 7 will
+      actively break a working setup. Phase 7, BOOTSTRAP.md:318: "**Stop `usbmuxd`, start
+      `netmuxd`** (>= 0.3). They collide: stock usbmuxd never emits ConnectionType `Network`, and
+      netmuxd binds `/var/run/usbmuxd` by default.
+
+- [ ] **A7. The published image is amd64-only, and nothing tells a Raspberry Pi user that before the pull fails**
+      `README.md` -- document
+      Verified against the registry: `ghcr.io/ben-diehlci/altserver-linux:latest` is public (good)
+      but its OCI index carries one platform, linux/amd64 — build_image.yml:83 sets `platforms:
+      linux/amd64` with the comment "amd64 only for now" (build_image.yml:72-75). README's Quick
+      start (README.md:31-44) and Download section (README.md:157) never mention this, while
+      README.md:159-161 advertises four-architecture binaries and build.yml:151-154 keeps
+      aarch64/armv7/i386 builders precisely because "dropping them entirely would make this fork
+
+- [ ] **A8. The commented-out build fallback in the stack uses a context that resolves to deploy/, so it cannot work as written**
+      `deploy/altserver-stack.yml` -- fix
+      deploy/altserver-stack.yml:130-134 offers `build:\n context: .\n dockerfile: Dockerfile` as
+      the documented escape hatch ("To build from source instead, comment the image line and
+      uncomment build:"). Compose resolves a relative build context against the project directory,
+      which for the command README gives (`docker compose -f deploy/altserver-stack.yml up -d`,
+      README.md:39) and for a Portainer repository stack with compose path `deploy/altserver-
+      stack.yml` is `deploy/` — which contains no Dockerfile. The build fails with "failed to read
+
+- [ ] **A9. BOOTSTRAP's install step still uses the password-on-the-command-line path and cites a TODO that is already done**
+      `BOOTSTRAP.md` -- fix
+      BOOTSTRAP.md:264 instructs `~/AltServer-x86_64 -u "$UDID" -a "$APPLEID" -p "$APPLEPW"
+      ~/AltStore.ipa`, and BOOTSTRAP.md:267-269 says "The password is still visible in `ps` for the
+      duration of the run, because the binary accepts it only as a command-line argument ... see
+      TODO 9 in REVIVAL.md". Both halves are stale: src/AltServerMain.cpp:193-199 reads
+      ALTSERVER_UDID / ALTSERVER_APPLE_ID / ALTSERVER_APPLE_PASSWORD with flag-over-env precedence,
+      README.md:92 says "Prefer these", and REVIVAL.md:1367 marks TODO 9 struck through and
+
+- [ ] **A10. BOOTSTRAP describes manual steps the shipped image has automated and never mentions the stack, the web UI, or netmuxd**
+      `BOOTSTRAP.md` -- fix
+      BOOTSTRAP.md:248 "Get `AltStore.ipa` from <https://altstore.io> onto the VM" and
+      BOOTSTRAP.md:256 `ls -la ~/AltStore.ipa` predate the automatic fetch: docker-entrypoint.sh:15
+      runs fetch-altstore on every start and README.md:43-44 says "The AltStore IPA is fetched
+      automatically on start". The whole document also predates deploy/altserver-stack.yml, the
+      :8099 web UI and netmuxd-as-a-service — its Phase 0 has the reader build and scp a bare
+      binary, and Phase 7 treats wireless as a manual future step, so nothing in it matches the
+
+- [ ] **A11. web/installer.py redaction misses the anisette machine identifiers it claims to filter**
+      `web/installer.py` -- fix
+      The install page footer (web/server.py:248) tells the user "Credentials and account data are
+      filtered out of the log above before it is shown", and installer.py's module docstring says
+      "Every line is filtered before it leaves this module." Verified against the actual log output,
+      that is not true for the anisette identity. `_SENSITIVE` (installer.py:32-36) matches only GsI
+      dmsToken|adsid|DsPrsId|phoneNumber|<data>|com.apple.gs.*</key>|"token"|<key>token</key>|sessio
+      nKey|Got token for. But src/AnisetteDataManager.cpp:315 calls `odslog(*anisetteData)`, and the
+
+- [ ] **A12. The getrandom() polyfill leaks a file descriptor on every call and ignores short reads**
+      `shims/old-linux-polyfill.c` -- fix
+      Lines 4-21 define a replacement for libc's `getrandom`: ```c ssize_t getrandom(void *buf,
+      size_t buflen, unsigned int flags) { int randomData = open("/dev/urandom", O_RDONLY); if
+      (randomData < 0) { return -1; } else { ssize_t result = read(randomData, buf, buflen); if
+      (result < 0) { return -1; } return result; } } ``` The descriptor is never closed on any path.
+      This file is compiled into the binary unconditionally: `makefiles/AltWindowsShim.mak:8`
+      collects `shim_src := $(wildcard $(SHIM_DIR)/*.cpp) $(wildcard $(SHIM_DIR)/*.c)`, and
+
+### Low severity
+
+- [ ] **A13. REVIVAL.md TODO item 5 is already done, and its guidance now contradicts the shipped design**
+      `REVIVAL.md` -- document
+      REVIVAL.md is the project's index of what is left to do, and its neighbours are carefully
+      struck through when finished (items 2, 3, 4 and 8 all carry `~~...~~ **DONE**`). Item 5 is
+      not, but it has been completed. REVIVAL.md:1285-1289 -- "5.
+
+- [ ] **A14. web/server.py's module docstring denies the sign-in and 2FA feature the same file serves**
+      `web/server.py` -- fix
+      web/server.py:21-23: "SCOPE. Read-only diagnostics. It deliberately does NOT sign in or handle
+      2FA yet -- that needs a supervisor that owns the AltServer child's stdin, and it should not be
+      built against an authentication flow that is not yet working." The file imports `installer`
+      (server.py:38), serves INSTALL_PAGE at /install (server.py:363) and posts credentials to
+      installer.INSTALLER.start at server.py:397-401; web/installer.py is exactly the stdin
+      supervisor the docstring says does not exist.
+
+- [ ] **A15. Dockerfile comments describe a web UI that is not started automatically and a fetch step that moved**
+      `Dockerfile` -- fix
+      Dockerfile:110-113: "Run it with `docker exec altserver python3 /opt/altserver-web/server.py
+      --host 0.0.0.0` / It is NOT started automatically -- it accepts an Apple ID password, so
+      exposing it should be a deliberate act rather than a side effect of deploying." The stack does
+      start it automatically as the `altserver-web` service on 0.0.0.0:8099 (deploy/altserver-
+      stack.yml:250, :320-321), and README.md:46 tells users to open it. The paragraph above it
+      (Dockerfile:108-109, "Fetches the current AltStore Classic IPA...") is also orphaned — it sits
+
+- [ ] **A16. An unpinned third-party action with contents:write — ad-m/github-push-action@master**
+      `.github/workflows/build.yml` -- fix
+      Line 263: `uses: ad-m/github-push-action@master`, inside the `update_submodule` job which
+      declares `permissions: contents: write` (line 249) and passes `github_token: ${{
+      secrets.GITHUB_TOKEN }}` (line 265). `@master` is a mutable ref: whatever is on that branch at
+      run time executes with write access to the repository. Every other action in this workflow was
+      deliberately moved to a pinned major during the revival (checkout@v7, upload-artifact@v7,
+      download-artifact@v8, setup-qemu-action@v4, action-gh-release@v3 — recorded in REVIVAL.md's
+
+- [ ] **A17. --help calls ALTSERVER_NO_SUBSCRIBE "(*unused*)" but the build wires it up**
+      `src/AltServerMain.cpp` -- fix
+      Line 98 of the usage text: ``` " - ALTSERVER_NO_SUBSCRIBE: (*unused*) Please enable this for
+      usbmuxd server that do not correctly usbmuxd_listen interfaces\n" ``` It is not unused.
+      `makefiles/rewrite_altserver_source.py:152-155` splices this into AltServerApp::Start at build
+      time: ```c const char *isNoUSB = getenv("ALTSERVER_NO_SUBSCRIBE"); if (!isNoUSB) {
+      DeviceManager::instance()->Start(); } ``` Setting the variable therefore suppresses
+      DeviceManager startup entirely — a significant behaviour change, and one that is plausibly
+
+Full per-finding detail, including the evidence each verifier checked, is in the workflow
+transcript for run `wf_faa3350d-635`. The summaries above are self-contained enough to act on
+without it.
 ## TODO
 
 ### Blockers for the actual goal — a working headless refresh server
