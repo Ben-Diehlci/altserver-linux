@@ -6,9 +6,9 @@ this module." It was not true. The filter was a blocklist built around Apple's *
 (GsIdmsToken, adsid, DsPrsId), and it missed the anisette machine identifiers that a successful
 sign-in prints one per line:
 
-    MachineID : EXAMPLEmachine...
-    One-Time Password: EXAMPLEotp...
-    Local User ID: EXAMPLElocaluser...
+    MachineID : <80 chars of base64>
+    One-Time Password: <base64>
+    Local User ID: <64 hex chars>
 
 All three rendered in full into a web page served over plain HTTP on the LAN, which is exactly the
 screenshot risk the redaction exists to prevent. Nobody noticed because the docstring asserted the
@@ -39,9 +39,13 @@ except Exception as exc:  # pragma: no cover
     print("FAIL: could not import web/installer.py: %s" % exc)
     sys.exit(1)
 
-# Values that must never appear in output. Shapes are real; digits are scrambled.
+# Values that must never appear in output. SYNTHETIC -- every one contains the literal
+# string EXAMPLE. They only need the character class and length the redaction rules key
+# on. An earlier version of this file used values copied verbatim from a real install
+# log while claiming to be scrambled, which published a live anisette machine identity
+# to a public repo. Never paste a real captured value in here, even a partial one.
 MACHINE_ID = "EXAMPLEmachineIDnotARealAnisetteIdentity0000000000000000000000000000000000000000"
-OTP = "EXAMPLEoneTimePasswordNotReal000000000=="
+OTP = "EXAMPLEoneTimePasswordNotReal0000000000=="
 LOCAL_USER_ID = "EXAMPLE1ocaluser1dEXAMPLE1ocaluser1dEXAMPLE1ocaluser1dEXAMPLE123"
 DEVICE_ID = "EXAMPLE1-0000-4000-8000-EXAMPLE00000"
 MD_LU = "EXAMPLE1ocaluser1dEXAMPLE1ocaluser1dEXAMPLE1ocaluser1dEXAMPLE123"
