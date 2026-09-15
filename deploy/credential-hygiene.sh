@@ -64,7 +64,8 @@ for c in altserver altserver-web anisette netmuxd; do
     fi
     size=$(sudo du -h "$logpath" 2>/dev/null | cut -f1)
     # Count, never print. A hit means credential material is sitting in this file.
-    hits=$(sudo grep -aicE 'GsIdmsToken|com\.apple\.gs\.|adsid|DsPrsId|MachineID|X-Apple-I-MD' "$logpath" 2>/dev/null || echo 0)
+    hits=$(sudo grep -aicE 'GsIdmsToken|com\.apple\.gs\.|adsid|DsPrsId|MachineID|X-Apple-I-MD' "$logpath" 2>/dev/null)
+    hits=${hits:-0}
     if [ "${hits:-0}" -gt 0 ]; then
         flag "$c: ${size:-?} log, $hits line(s) carrying credentials or machine identity"
     else
@@ -100,8 +101,10 @@ else
 fi
 
 hr; echo "INTERRUPTED INSTALLS -- signed bundles left in container /tmp"; hr
+tmp_checked=0
 for c in altserver altserver-web; do
-    docker inspect "$c" >/dev/null 2>&1 || continue
+    docker inspect "$c" >/dev/null 2>&1 || { note "$c: not present, skipping"; continue; }
+    tmp_checked=1
     leftovers=$(docker exec "$c" sh -c 'ls -d /tmp/*-*-*-*-* 2>/dev/null | head -20' 2>/dev/null)
     if [ -n "$leftovers" ]; then
         flag "$c: UUID-named directories in /tmp (may contain ALTCertificate.p12)"
@@ -134,7 +137,8 @@ hr; echo "SHELL HISTORY -- from any bare-metal install that passed -p"; hr
 histhits=0
 for h in "$HOME/.bash_history" "$HOME/.zsh_history"; do
     [ -f "$h" ] || continue
-    n=$(grep -acE 'AltServer.* -p |ALTSERVER_APPLE_PASSWORD=' "$h" 2>/dev/null || echo 0)
+    n=$(grep -acE 'AltServer.* -p |ALTSERVER_APPLE_PASSWORD=' "$h" 2>/dev/null)
+    n=${n:-0}
     if [ "${n:-0}" -gt 0 ]; then
         flag "$h: $n line(s) that may contain an Apple ID password"
         histhits=1
