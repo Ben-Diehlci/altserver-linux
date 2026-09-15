@@ -477,7 +477,7 @@ submodule and the glob; dropping `libraries/**` still fails as before.
 
 That is the third time in this session a check shared a blind spot with the thing it checks.
 
-### FIXED 2026-09-14: the sockaddr layout bug above, now patched -- and there were THREE sites, not two
+### FIXED AND CONFIRMED 2026-09-14: the sockaddr layout bug above -- wireless refresh now works, and there were THREE sites, not two
 
 Option 2 from the section above, implemented. The bug is no longer inferred from reading two trees:
 it was **observed in production** on this deployment, then fixed and the fix proven.
@@ -625,17 +625,67 @@ asserting that the code is correct.* The first version of this guard checked for
 string `"conn_data)[0];"` -- with a trailing semicolon -- and a mutant that reintroduced the same
 read as a `malloc()` argument, with no semicolon, sailed straight through.
 
-**Still unproven: that refresh now succeeds end to end.** The fix is correct at the byte level and
-the build is clean, but it has not yet run against the phone. That needs a rebuilt image deployed
-to the stack. Until then this is "the connect path can now parse the address netmuxd sends", not
-"refresh works".
+**PROVEN END TO END on the deployed stack, 2026-09-14 (01:39Z).** A refresh triggered from
+AltStore on the phone produced, in `docker logs altserver`:
 
-Two traps from earlier in this log still apply to testing it:
+```
+Receiving 44900 bytes...
+Removed profile: com.<team>.com.rileytestut.AltStore (<uuid>)
+Removed profile: com.<team>.com.rileytestut.AltStore.AltWidget (<uuid>)
+Installed profile: com.<team>.com.rileytestut.AltStore (<new uuid>)
+Installed profile: com.<team>.com.rileytestut.AltStore.AltWidget (<new uuid>)
+Finished handling request!
+```
+
+No `Failed to handle request:` anywhere in the run. Compare the pre-fix log, where a request of
+almost exactly this shape (44887 bytes) died at
+`Failed to handle request:There was an error connecting to the device.`
+
+**Why those four lines are conclusive and not merely encouraging.** They are emitted by
+`DeviceManager.cpp:985` / `:1029`, inside the function at `:757` that does, in order:
+
+1. `idevice_new_with_options(..., IDEVICE_LOOKUP_NETWORK | IDEVICE_LOOKUP_USBMUX)` -- the entry
+   point that reaches `idevice_from_mux_device`, patch site 2;
+2. `lockdownd_client_new_with_handshake(...)` -- which requires a real TCP connection through
+   `idevice_connect`, patch site 3;
+3. `lockdownd_start_service(... "com.apple.misagent" ...)` and `misagent_client_new`.
+
+None of that can run, let alone print, unless the network device connection was established. The
+old-profile removal followed by new UUIDs is a genuine 7-day refresh cycle, not a no-op.
+
+**The input bytes did not change -- only the parser did.** Checked at the same time, `docker logs
+netmuxd` still reports the device exactly as before:
+
+```
+ConnectionType: "Network"
+NetworkAddress: Data(02 00 00 00 C0 A8 08 2D 00 00 ... Len: 128)
+```
+
+Byte for byte the blob that used to fail. netmuxd was not upgraded, reconfigured or restarted into
+a different code path, so "something else changed" is excluded: the same input now parses because
+the parser was fixed. This is the controlled comparison the original diagnosis predicted, and it is
+worth more than the success log on its own.
+
+**A second risk closed as a side effect.** `lockdownd_client_new_with_handshake` succeeding over
+the network means the pairing record is usable for a *network* device, not just a cabled one.
+That had been flagged as the most likely next failure and is now empirically ruled out.
+
+**Still not proven by this run**, and neither follows from it:
+
+* **Unattended refresh.** This was triggered by hand from the phone. Whether iOS ever wakes
+  AltStore on its own is the separate and much harder ceiling recorded below -- AltStore registers
+  no `BGTaskScheduler` task and relies on the deprecated background-fetch API.
+* **The full-install path.** The pre-fix failure also included a 124932582-byte app upload. That
+  larger path was not re-exercised here. It uses the same `idevice_connect` network path, so there
+  is no specific reason to expect trouble, but it has not been observed working.
+
+Two traps from earlier in this log applied while testing, and both held:
 
 * `docker exec altserver idevice_id -l` uses **Debian's** post-2023 libimobiledevice, not the
   vendored 2021 copy AltServer links. It parsed this address correctly all along. A green result
-  there is still not evidence about AltServer.
-* The status page cannot see this either, for the same reason.
+  there was never evidence about AltServer, before or after.
+* The status page cannot see this either, for the same reason. The only thing that could confirm
+  the fix was AltServer's own log, which is what was used.
 
 ### CONFIRMED 2026-09-14: mDNS advertising now works after the AppArmor redeploy
 
