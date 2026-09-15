@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# Installs the altserver-mdns AppArmor profile on the HOST.
+#
+# This cannot be folded into the image or the compose file. AppArmor profiles are loaded into the
+# host kernel by root, and Docker's `security_opt: apparmor=<name>` only SELECTS a profile that is
+# already loaded. That is a property of AppArmor, not a gap in this project -- so this one step
+# stays manual no matter how self-contained the rest of the deployment is.
+#
+#   sudo bash deploy/apparmor/install.sh
+#
+# Then switch the stack from `apparmor=unconfined` to `apparmor=altserver-mdns` on the altserver
+# and altserver-web services, and redeploy.
+
+set -euo pipefail
+
+PROFILE_NAME="altserver-mdns"
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/${PROFILE_NAME}"
+DEST="/etc/apparmor.d/${PROFILE_NAME}"
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "This must run as root: sudo bash $0" >&2
+    exit 1
+fi
+
+if [ ! -f "$SRC" ]; then
+    echo "Profile not found at $SRC" >&2
+    exit 1
+fi
+
+if ! command -v apparmor_parser >/dev/null 2>&1; then
+    echo "apparmor_parser is not installed. On Debian/Ubuntu: apt install apparmor-utils" >&2
+    exit 1
+fi
+
+if [ ! -d /sys/kernel/security/apparmor ]; then
+    echo "AppArmor is not enabled on this kernel. Nothing to do -- and nothing to work around:" >&2
+    echo "without AppArmor the containers are not being denied D-Bus in the first place." >&2
+    exit 1
+fi
+
+echo "Installing ${PROFILE_NAME} -> ${DEST}"
+install -m 0644 "$SRC" "$DEST"
+
+echo "Loading it into the kernel"
+apparmor_parser -r -W "$DEST"
+
+# Confirm rather than assume: a profile can parse, install, and still not be loaded.
+if aa-status --profiled 2>/dev/null | grep -qx "$PROFILE_NAME"; then
+    echo "OK: ${PROFILE_NAME} is loaded."
+else
+    echo "WARNING: ${PROFILE_NAME} did not appear in aa-status. Check: sudo aa-status" >&2
+    exit 1
+fi
+
+cat <<EOF
+
+Done. Now edit deploy/altserver-stack.yml and change BOTH occurrences of:
+
+    security_opt:
+      - apparmor=unconfined
+
+to:
+
+    security_opt:
+      - apparmor=${PROFILE_NAME}
+
+then redeploy the stack.
+
+Verify afterwards that the container is actually running under it:
+
+    docker exec altserver cat /proc/self/attr/current     # expect: ${PROFILE_NAME} (enforce)
+
+and that mDNS works -- from ANOTHER machine on the LAN, not this host:
+
+    avahi-browse -rt _altserver._tcp
+EOF

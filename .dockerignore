@@ -1,11 +1,9 @@
-/build
+.git
+build/
 *.o
-.vscode
-
-# macOS
 .DS_Store
 ._*
-
-# python
 __pycache__/
 *.pyc
+REVIVAL.md
+BOOTSTRAP.md

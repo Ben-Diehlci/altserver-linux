@@ -7,6 +7,8 @@
 #include <set>
 #include <ctime>
 #include <cstdlib>
+#include <cstring>
+#include <memory>
 
 #include "AnisetteData.h"
 #include "AltServerApp.h"
@@ -49,28 +51,53 @@ using namespace web;                        // Common features like URIs.
 using namespace web::http;                  // Common HTTP functionality
 using namespace web::http::client;          // HTTP client features
 
+// The anisette server that used to be hardcoded here (armconverter.com) has been returning
+// HTTP 502 with a text/plain body since at least 2026-09, and response.extract_json() on that
+// reply throws a bare "Incorrect Content-Type: must be textual to extract_string, JSON to
+// extract_json." naming neither the server nor the status code. That single unexplained line
+// is the most-reported failure in this project (issues #99, #100, #128, #130).
+//
+// There is deliberately no default any more: pointing every user at one shared anisette
+// identity also gets Apple IDs locked (issue #88). The server must be chosen explicitly.
 std::string GetAnisetteURL() {
 	const char *server = getenv("ALTSERVER_ANISETTE_SERVER");
-	if (server) {
-		return server;
+	if (server == NULL || *server == '\0') {
+		throw ServerError(ServerErrorCode::InvalidAnisetteData, {
+			{ LocalizedFailureErrorKey,
+			  "No anisette server is configured. Set the ALTSERVER_ANISETTE_SERVER environment "
+			  "variable to the URL of an anisette server before running AltServer." }
+		});
 	}
-	return U("https://armconverter.com/anisette/irGb3Quww8zrhgqnzmrx");
+	return server;
 }
 
 std::shared_ptr<AnisetteData> AnisetteDataManager::FetchAnisetteData()
 {
-	// auto client = web::http::client::http_client(U("https://armconverter.com"));
-	// std::string wideURI = ("/anisette/irGb3Quww8zrhgqnzmrx");
-	
-	// auto encodedURI = web::uri::encode_uri(wideURI);
-	// uri_builder builder(encodedURI);
+	std::string anisetteURL = GetAnisetteURL();
+	odslog("Fetching anisette data from: " << anisetteURL);
 
-	// http_request request(methods::GET);
-	// request.set_request_uri(builder.to_string());
+	// http_client's constructor validates the URI and throws before any request is made: a
+	// missing scheme or hostname ("localhost:6969", which is exactly what someone running a
+	// containerised anisette server is likely to type) raises std::invalid_argument, and a
+	// malformed URI raises uri_exception. Neither derives from Error, so uncaught they reach the
+	// device as errorCode 0 (Unknown) rather than InvalidAnisetteData, and the CLI prints raw
+	// cpprest text under a generic title -- the exact failure mode this function exists to end.
+	std::unique_ptr<web::http::client::http_client> client;
+	try
+	{
+		client.reset(new web::http::client::http_client(anisetteURL));
+	}
+	catch (const std::exception& exception)
+	{
+		throw ServerError(ServerErrorCode::InvalidAnisetteData, {
+			{ LocalizedFailureErrorKey,
+			  "ALTSERVER_ANISETTE_SERVER is not a usable URL (\"" + anisetteURL + "\"): " +
+			  exception.what() + ". It must include a scheme, for example http://127.0.0.1:6969." }
+		});
+	}
 
-	auto client = web::http::client::http_client(GetAnisetteURL());
 	http_request request(methods::GET);
-	
+
 	std::map<utility::string_t, utility::string_t> headers = {
 		{"User-Agent", "Xcode"},
 	};
@@ -85,63 +112,205 @@ std::shared_ptr<AnisetteData> AnisetteDataManager::FetchAnisetteData()
 		request.headers().add(pair.first, pair.second);
 	}
 
-	std::shared_ptr<AnisetteData> anisetteData = NULL;
+	// This function was already synchronous -- the original chained pplx continuations and then
+	// immediately called task.wait(). Doing it in a straight line makes it possible to attach the
+	// URL and status code to every failure, which is the whole point of the exercise.
+	http_response response;
+	try
+	{
+		response = client->request(request).get();
+		response.content_ready().wait();
+	}
+	catch (const std::exception& exception)
+	{
+		// DNS failure, connection refused, TLS error, malformed URL, ...
+		throw ServerError(ServerErrorCode::InvalidAnisetteData, {
+			{ LocalizedFailureErrorKey,
+			  "Could not reach the anisette server at " + anisetteURL + ": " + exception.what() }
+		});
+	}
 
-	auto task = client.request(request)
-		.then([=](http_response response)
-			{
-				return response.content_ready();
-			})
-		.then([=](http_response response)
-			{
-				odslog("Received response status code: " << response.status_code());
-				return response.extract_json();
-			})
-		.then([&anisetteData](pplx::task<json::value> previousTask)
-			{
-				odslog("parse anisette data ret");
-				json::value jsonVal = previousTask.get();
-				odslog("Got anisetteData json: " << jsonVal);
-				std::vector<std::string> keys = {
-					"X-Apple-I-MD-M",
-					"X-Apple-I-MD",
-					"X-Apple-I-MD-LU",
-					"X-Apple-I-MD-RINFO",
-					"X-Mme-Device-Id",
-					"X-Apple-I-SRL-NO",
-					"X-MMe-Client-Info",
-					"X-Apple-I-Client-Time",
-					"X-Apple-Locale",
-					"X-Apple-I-TimeZone"
-				};
-				for (auto &key : keys) {
-					odslog(key << ": " << jsonVal.at(key).as_string().c_str());
-				}
+	auto statusCode = response.status_code();
+	odslog("Received response status code: " << statusCode);
 
-				struct tm tm = { 0 };
-				strptime(jsonVal.at("X-Apple-I-Client-Time").as_string().c_str(), "%Y-%m-%dT%H:%M:%SZ", &tm);
-				unsigned long ts = mktime(&tm);
-				struct timeval tv = { 0 };
-				tv.tv_sec = ts;
-				tv.tv_usec = 0;
+	std::string body;
+	try
+	{
+		body = response.extract_utf8string(true).get();
+	}
+	catch (const std::exception&)
+	{
+		// A body we cannot even read as text is reported below via the status code alone.
+		body = "";
+	}
 
-				odslog("Building anisetteData obj...");
-				anisetteData = std::make_shared<AnisetteData>(
-					jsonVal.at("X-Apple-I-MD-M").as_string(),
-					jsonVal.at("X-Apple-I-MD").as_string(),
-					jsonVal.at("X-Apple-I-MD-LU").as_string(),
-					std::atoi(jsonVal.at("X-Apple-I-MD-RINFO").as_string().c_str()),
-					jsonVal.at("X-Mme-Device-Id").as_string(),
-					jsonVal.at("X-Apple-I-SRL-NO").as_string(),
-					jsonVal.at("X-MMe-Client-Info").as_string(),
-					tv,
-					jsonVal.at("X-Apple-Locale").as_string(),
-					jsonVal.at("X-Apple-I-TimeZone").as_string());
-				
-				//IterateJSONValue();
+	// Clamp the preview to printable ASCII on one line. Two reasons beyond readability:
+	// truncating at a byte boundary can split a multi-byte UTF-8 sequence, and this string is
+	// copied verbatim into the JSON ErrorResponse sent to the device -- invalid UTF-8 there makes
+	// the phone reject the whole response, losing the message this function worked to build. It
+	// also neutralises terminal escapes, since the CLI path prints this straight to stdout.
+	std::string bodyPreview = body.substr(0, 256);
+	for (auto& character : bodyPreview)
+	{
+		unsigned char byte = static_cast<unsigned char>(character);
+		if (byte < 0x20 || byte > 0x7E)
+		{
+			character = (byte == '\r' || byte == '\n' || byte == '\t') ? ' ' : '.';
+		}
+	}
+
+	if (body.empty())
+	{
+		bodyPreview = "(empty response body)";
+	}
+	else if (body.size() > 256)
+	{
+		bodyPreview += "...";
+	}
+
+	if (statusCode != status_codes::OK)
+	{
+		throw ServerError(ServerErrorCode::InvalidAnisetteData, {
+			{ LocalizedFailureErrorKey,
+			  "The anisette server at " + anisetteURL + " returned HTTP " +
+			  std::to_string(statusCode) + ". Response body: " + bodyPreview }
+		});
+	}
+
+	std::error_code parseError;
+	json::value jsonVal = json::value::parse(body, parseError);
+	if (parseError || !jsonVal.is_object())
+	{
+		throw ServerError(ServerErrorCode::InvalidAnisetteData, {
+			{ LocalizedFailureErrorKey,
+			  "The anisette server at " + anisetteURL + " did not return a JSON object. "
+			  "Response body: " + bodyPreview }
+		});
+	}
+
+	odslog("Got anisetteData json: " << jsonVal);
+
+	auto requireString = [&](const std::string& key) -> std::string
+	{
+		if (!jsonVal.has_field(key))
+		{
+			throw ServerError(ServerErrorCode::InvalidAnisetteData, {
+				{ LocalizedFailureErrorKey,
+				  "The anisette server at " + anisetteURL + " returned a response with no \"" +
+				  key + "\" field. Response body: " + bodyPreview }
 			});
-	
-	task.wait();
+		}
+
+		const json::value& field = jsonVal.at(key);
+		if (!field.is_string())
+		{
+			throw ServerError(ServerErrorCode::InvalidAnisetteData, {
+				{ LocalizedFailureErrorKey,
+				  "The anisette server at " + anisetteURL + " returned a non-string value for \"" +
+				  key + "\": " + field.serialize() }
+			});
+		}
+
+		return field.as_string();
+	};
+
+	std::string clientTime = requireString("X-Apple-I-Client-Time");
+
+	// The canonical form is YYYY-MM-DDTHH:MM:SSZ -- that is what upstream AltStore emits, via
+	// NSISO8601DateFormatter with default options (AltSign/Apple API/ALTAppleAPI.m). But the value
+	// parsed HERE comes from a third-party anisette server, not from AltStore, and those are
+	// independent implementations. Matching the trailing "Z" as a literal would reject tails like
+	// ".123456Z" or a bare "2026-09-14T12:34:56" that resolve to exactly the same instant, turning
+	// a working server into a hard failure on every refresh. So parse only through the seconds.
+	struct tm tm = { 0 };
+	const char* tail = strptime(clientTime.c_str(), "%Y-%m-%dT%H:%M:%S", &tm);
+	if (tail == NULL)
+	{
+		// The original ignored strptime()'s return value entirely, so an unparseable timestamp
+		// silently became whatever the zero-initialised struct produced.
+		throw ServerError(ServerErrorCode::InvalidAnisetteData, {
+			{ LocalizedFailureErrorKey,
+			  "The anisette server at " + anisetteURL + " returned an X-Apple-I-Client-Time that "
+			  "does not begin with YYYY-MM-DDTHH:MM:SS: " + clientTime }
+		});
+	}
+
+	// An explicit numeric UTC offset IS rejected, because timegm() below ignores the tail entirely
+	// and would otherwise silently produce an instant wrong by that offset.
+	if (strchr(tail, '+') != NULL || strchr(tail, '-') != NULL)
+	{
+		throw ServerError(ServerErrorCode::InvalidAnisetteData, {
+			{ LocalizedFailureErrorKey,
+			  "The anisette server at " + anisetteURL + " returned an X-Apple-I-Client-Time with a "
+			  "non-UTC offset, which cannot be interpreted reliably: " + clientTime }
+		});
+	}
+
+	// The timestamp carries a trailing "Z", so it is UTC. mktime() interprets the fields as
+	// LOCAL time, which skewed the instant by the host's UTC offset on any machine not running
+	// in UTC. timegm() is the UTC counterpart.
+	struct timeval tv = { 0 };
+	tv.tv_sec = timegm(&tm);
+	tv.tv_usec = 0;
+
+	odslog("Building anisetteData obj...");
+	// Read the fields into locals first. As arguments to make_shared these would be evaluated in
+	// an unspecified order, so which missing field got reported would depend on the compiler --
+	// unhelpful in a function whose entire purpose is a deterministic diagnosis.
+	std::string machineID = requireString("X-Apple-I-MD-M");
+	std::string oneTimePassword = requireString("X-Apple-I-MD");
+	std::string localUserID = requireString("X-Apple-I-MD-LU");
+	std::string routingInfo = requireString("X-Apple-I-MD-RINFO");
+	std::string deviceUniqueIdentifier = requireString("X-Mme-Device-Id");
+	std::string deviceSerialNumber = requireString("X-Apple-I-SRL-NO");
+	std::string deviceDescription = requireString("X-MMe-Client-Info");
+
+	// Since ~2026-09 Apple's GSA edge (gsa.apple.com/grandslam/GsService2) rejects with an
+	// immediate HTTP 503 any request whose X-MMe-Client-Info contains "com.apple.dt.Xcode",
+	// independent of version or User-Agent. Anisette servers commonly return exactly that
+	// substring -- upstream AltStore still builds one containing com.apple.dt.Xcode/3594.4.19
+	// as of v2.3.3. Sanitize it here, at the single point where anisette data enters this
+	// program, before it is ever used to build a request header. See upstream PR #135.
+	//
+	// This is an UNVERIFIED third-party claim that we cannot test without a real Apple ID, and
+	// it alters a header Apple sees -- so it is defeatable without a rebuild. If sign-in fails
+	// with the rewrite in place, try ALTSERVER_NO_CLIENTINFO_SANITIZE=1 before assuming the
+	// anisette server is at fault.
+	const char *noSanitize = getenv("ALTSERVER_NO_CLIENTINFO_SANITIZE");
+	if (noSanitize == NULL || *noSanitize == '\0')
+	{
+		const std::string needle = "com.apple.dt.Xcode";
+		const std::string replacement = "com.apple.akd";
+
+		size_t position = 0;
+		bool rewrote = false;
+		while ((position = deviceDescription.find(needle, position)) != std::string::npos)
+		{
+			deviceDescription.replace(position, needle.length(), replacement);
+			position += replacement.length();
+			rewrote = true;
+		}
+
+		if (rewrote)
+		{
+			odslog("Rewrote " << needle << " -> " << replacement << " in X-MMe-Client-Info "
+				"(Apple 503s requests carrying it). Set ALTSERVER_NO_CLIENTINFO_SANITIZE=1 to disable.");
+		}
+	}
+	std::string locale = requireString("X-Apple-Locale");
+	std::string timeZone = requireString("X-Apple-I-TimeZone");
+
+	auto anisetteData = std::make_shared<AnisetteData>(
+		machineID,
+		oneTimePassword,
+		localUserID,
+		std::atoi(routingInfo.c_str()),
+		deviceUniqueIdentifier,
+		deviceSerialNumber,
+		deviceDescription,
+		tv,
+		locale,
+		timeZone);
 
 	odslog(*anisetteData);
 
@@ -259,16 +428,20 @@ bool AnisetteDataManager::ReprovisionDevice(std::function<void(void)> provisionC
 
 bool AnisetteDataManager::ResetProvisioning()
 {
-	std::string adiDirectoryPath = "C:\\ProgramData\\Apple Computer\\iTunes\\adi";
-
-	// Remove existing AltServer .pb files so we can create new ones next time we provision this device.
-	for (const auto& entry : fs::directory_iterator(adiDirectoryPath))
-	{
-		if (entry.path().extension() == ".altserver")
-		{
-			fs::remove(entry.path());
-		}
-	}
-
+	// On Windows this clears AltServer's cached ADI provisioning files so the next attempt
+	// re-provisions the machine. There is no such directory on Linux -- anisette data comes
+	// from an external anisette server, and nothing here is cached locally, so there is
+	// nothing to reset.
+	//
+	// This used to iterate the literal Windows path below, which threw a
+	// std::filesystem::filesystem_error about "C:\\ProgramData\\..." on every Linux run:
+	//
+	//     std::string adiDirectoryPath = "C:\\ProgramData\\Apple Computer\\iTunes\\adi";
+	//
+	// Both callers (AltServerApp.cpp, in `catch (APIError&)` when Apple returns
+	// InvalidAnisetteData) invoke this while already handling an error, so that exception
+	// escaped the handler and replaced Apple's real, actionable error with a confusing
+	// Windows path -- and at the first call site it also aborted the 12-second retry that
+	// was about to run. See issue #104.
 	return true;
 }

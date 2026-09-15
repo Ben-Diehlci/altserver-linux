@@ -1,0 +1,79 @@
+# Anisette server for AltServer-Linux (the legacy "anisette-v1" flat-JSON endpoint).
+#
+# LAN-ONLY BY DESIGN. Bound to loopback. This hands out an Apple machine identity --
+# it must NOT go behind Nginx Proxy Manager and must NOT get a Cloudflare Tunnel.
+#
+# ---------------------------------------------------------------------------------
+# ONE-TIME PREP ON THE UBUNTU VM, BEFORE YOU DEPLOY THIS STACK.
+# The container runs as uid 1000, and a bind mount inherits the HOST directory's
+# ownership (root:root by default), so without this the process cannot write its
+# identity files and dies with:
+#   std.file.FileException@std/file.d(3001): .../lib: Permission denied
+#
+#   sudo mkdir -p /opt/stacks/anisette/config
+#   sudo chown 1000:1000 /opt/stacks/anisette/config
+#   sudo chmod 700 /opt/stacks/anisette/config
+# ---------------------------------------------------------------------------------
+
+services:
+  anisette:
+    # Digest-pinned on purpose. ":latest" is the only tag published, and it is ~17
+    # months behind the git source because upstream's publish workflow keeps failing.
+    # Pinning means a surprise CI fix can never silently swap the binary that holds
+    # your Apple machine identity out from under a running deployment.
+    # CHANGE ONLY IF: you decide to build from source into ghcr.io/ben-diehlci/ (see fallbacks).
+    image: dadoum/anisette-v3-server@sha256:1e20384985d3c49965f444bef39d627768dacc39ea0dca91f2a535edb7591ba3
+    container_name: anisette
+    restart: unless-stopped
+
+    environment:
+      # MUST STAY UTC. The server stamps X-Apple-I-Client-Time from LOCAL wall-clock
+      # time and then staples a literal "Z" onto it. Under any other TZ it sends Apple
+      # a timestamp wrong by your UTC offset while claiming to be UTC -- a well-formed,
+      # contract-passing, silently wrong value that nothing in any log will name.
+      # DO NOT copy TZ=America/New_York here from your Plex / Immich / AdGuard stacks.
+      TZ: UTC
+
+    ports:
+      # Loopback only. This assumes AltServer runs on THIS SAME VM sharing the host
+      # network namespace (network_mode: host, or as a bare binary), which it must
+      # anyway for mDNS and usbmuxd.
+      # CHANGE ONLY IF: AltServer runs as a bridge-networked container. In that case
+      # delete this whole ports: block, put both services on one internal compose
+      # network, and point AltServer at http://anisette:6969 instead. Do not publish
+      # this port on 0.0.0.0 or on 192.168.9.16.
+      - "127.0.0.1:6969:6969"
+
+    volumes:
+      # ***** THE MACHINE IDENTITY LIVES HERE. THIS LINE IS THE WHOLE DEPLOYMENT. *****
+      # Mount this DIRECTORY, not its lib/ subdirectory.
+      # The project's own README -- and every forum copy of it -- says
+      #   .../anisette-v3/lib/
+      # That subdirectory holds ONLY the two Apple .so files downloaded at first run.
+      # device.json and adi.pb live one level UP. Mount lib/ and they stay on the
+      # container's writable layer, so every Portainer "Update the stack" destroys
+      # them, the server mints a brand-new machine, Apple demands 2FA, and unattended
+      # refresh dies silently. That is issue #86, and it comes from the official docs.
+      # CHANGE ONLY IF: your stacks live somewhere other than /opt/stacks. Left side only.
+      # NEVER change the right side.
+      - /opt/stacks/anisette/config:/home/Alcoholic/.config/anisette-v3
+
+    healthcheck:
+      # Deliberately /v3/client_info and NOT "/". The v1 route at "/" performs REAL
+      # provisioning against Apple whenever the machine is not yet provisioned, so a
+      # polling healthcheck on "/" would hammer Apple's endpoint at exactly the moment
+      # your identity volume has gone missing -- turning a restore-the-backup incident
+      # into rate-limit / account-lock territory. /v3/client_info is static and makes
+      # no Apple contact.
+      # CHANGE ONLY IF: the container reports "unhealthy" immediately. The April-2025
+      # image may not ship curl -- check with `docker exec anisette curl --version`.
+      # If curl is missing, just DELETE this entire healthcheck block. It is a
+      # Portainer dashboard signal only; plain Compose never restarts an unhealthy
+      # container (that is Swarm), and auto-restarting into Apple provisioning would
+      # be the harmful loop described above.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:6969/v3/client_info"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      # First run downloads the Apple Music APK and provisions against Apple. Minutes.
+      start_period: 5m

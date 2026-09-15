@@ -5,7 +5,14 @@ on:
   workflow_dispatch:
     inputs:
       sync_upstream:
+        description: 'Also check upstream_repo for new commits and sync if it changed'
         required: false
+        type: boolean
+        default: false
+      all_arches:
+        description: 'Build every architecture, not just amd64'
+        required: false
+        type: boolean
         default: false
       debug_enabled:
         description: 'Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)'
@@ -13,27 +20,83 @@ on:
         default: false
   repository_dispatch:
 
-  schedule:
-    - cron: "0 */4 * * *" # min hour day week year
+  # NO schedule. This used to run `cron: "0 */4 * * *"` -- 6 times a day, ~180 runs a month --
+  # watching the upstream_repo submodule, which is rileytestut/AltServer-Windows, NOT this repo's
+  # upstream (NyaMisty/AltServer-Linux). AltServer-Windows has not moved since 071b1dd on
+  # 2022-04-25, so every one of those runs found nothing.
+  #
+  # Removed for a second and better reason than noise. When it DID find a commit it ran
+  # `git submodule update --remote -- upstream_repo` and built all four architectures from that
+  # newer source WITHOUT committing it, so a published artifact could come from code no commit in
+  # this repo describes. The build rewrites those sources textually
+  # (makefiles/rewrite_altserver_source.py), and that rewriter has no match guards at all, so an
+  # upstream move could change what the binary does with nothing failing -- see the TODO in
+  # REVIVAL.md. An unattended job is the worst place for that.
+  #
+  # Nothing is lost: the same check still runs on demand via the `sync_upstream` input above. The
+  # `github.event_name == 'schedule'` conditions in the check and matrix_setup jobs are left in
+  # place, so restoring the cron here is the only edit needed to bring the old behaviour back.
 
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
+  # Two guards for failures that were invisible while everything reported success. They live HERE,
+  # in the workflow with no paths: filter, because one of them detects a broken paths: filter --
+  # a guard inside build_image.yml would be skipped by exactly the bug it is meant to catch.
+  #
+  # Fast and dependency-free, so they gate nothing and cost nothing.
+  guards:
+    runs-on: ubuntu-latest
+    name: "Guards"
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      # An omitted paths: entry meant five commits of web fixes never reached a published image,
+      # while CI stayed green and the deployment kept serving the old code.
+      - name: Everything copied into the image triggers a rebuild
+        run: python3 tests/check_workflow_paths.py
+
+      # A literal newline inside a JS string literal once killed an entire <script> block. The
+      # Python was well tested; nothing ever parsed what the browser actually runs.
+      - name: Generated pages emit valid JavaScript
+        run: python3 tests/check_page_js.py
+
+      # A duplicate mapping key shipped because yaml.safe_load keeps the last one instead of
+      # erroring, so the stack only broke at deploy time inside Portainer.
+      - name: Compose files load the way Docker loads them
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 tests/check_compose.py
+
+      # A usbmux network address is a raw sockaddr in the layout of whichever host produced it, and
+      # the vendored parser understood only the BSD one -- so every Wi-Fi refresh failed as a device
+      # fault while the phone sat plainly visible in the device list. Needs the real submodule
+      # source, because the guard also proves the rewriter still matches it.
+      - name: Fetch the libimobiledevice submodule
+        run: git submodule update --init --depth 1 libraries/libimobiledevice
+
+      - name: usbmux network addresses parse in both sockaddr layouts
+        run: python3 tests/check_conn_data_layout.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
 
       - name: Check If Need Checking
         id: needCheck
-        if: ${{ github.event_name == 'schedule' || ( github.event_name == 'workflow_dispatch' && github.event.inputs.sync_upstream ) }}
+        if: ${{ github.event_name == 'schedule' || ( github.event_name == 'workflow_dispatch' && inputs.sync_upstream ) }}
         run: |
           echo "needCheck=1" >> $GITHUB_ENV
 
@@ -54,31 +117,69 @@ jobs:
             git submodule update --init
             if [[ "$current_upstream" != "$new_upstream" ]]; then
               echo "Upstream got new commits, go updating!"
-              echo "::set-output name=updated::1"
+              echo "updated=1" >> $GITHUB_OUTPUT
             else
               echo "Upstream no change~"
-              echo "::set-output name=updated::0"
+              echo "updated=0" >> $GITHUB_OUTPUT
             fi
           else
             echo "Needn't to check changes, directly return~"
-            echo "::set-output name=updated::0"
+            echo "updated=0" >> $GITHUB_OUTPUT
           fi
-
-      - uses: gautamkrishnar/keepalive-workflow@master
-        with:
-          commit_message: "[proj] keepalive-workflow auto commit"
     outputs:
       updated: ${{ steps.check.outputs.updated }}
 
-  build:
-    needs: [check]
-    strategy:
-      matrix:
-        builder: [ghcr.io/nyamisty/altserver_builder_alpine_armv7, ghcr.io/nyamisty/altserver_builder_alpine_aarch64, ghcr.io/nyamisty/altserver_builder_alpine_amd64, ghcr.io/nyamisty/altserver_builder_alpine_i386]
+  # Decides which architectures to build. amd64 alone for ordinary branch pushes, which is what
+  # day-to-day iteration actually consumes; the full set for tags (the release job needs all four),
+  # for the scheduled upstream-sync run, and on demand via the all_arches input.
+  #
+  # The emulated legs (armv7, aarch64, i386 run under QEMU on x86 runners) take several times
+  # longer than amd64, so paying for them on every push is pure latency for no benefit -- but
+  # dropping them entirely would make this fork useless on a Raspberry Pi, which is much of the
+  # point of AltServer-Linux.
+  matrix_setup:
     runs-on: ubuntu-latest
+    name: "Select architectures"
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - name: Pick architectures
+        id: pick
+        run: |
+          AMD64='{"arch":"amd64","builder":"ghcr.io/nyamisty/altserver_builder_alpine_amd64"}'
+          AARCH64='{"arch":"aarch64","builder":"ghcr.io/nyamisty/altserver_builder_alpine_aarch64"}'
+          ARMV7='{"arch":"armv7","builder":"ghcr.io/nyamisty/altserver_builder_alpine_armv7"}'
+          I386='{"arch":"i386","builder":"ghcr.io/nyamisty/altserver_builder_alpine_i386"}'
+
+          if [[ "${{ github.ref }}" == refs/tags/* ]] \
+             || [[ "${{ github.event_name }}" == "schedule" ]] \
+             || [[ "${{ inputs.all_arches }}" == "true" ]]; then
+            echo "Building ALL architectures"
+            echo "matrix={\"include\":[$ARMV7,$AARCH64,$AMD64,$I386]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Branch push: building amd64 only. Use the all_arches input, or push a tag, for the full set."
+            echo "matrix={\"include\":[$AMD64]}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: [check, matrix_setup]
+    strategy:
+      # Do not cancel the other legs when one fails: the emulated architectures are the most
+      # likely to break, and killing a good amd64 build because armv7 died wastes the useful one.
+      fail-fast: false
+      # Computed by matrix_setup above. Each leg carries a short `arch` label because
+      # actions/upload-artifact rejects '/' and ':' in artifact names, so the image reference
+      # cannot be used as the name.
+      matrix: ${{ fromJSON(needs.matrix_setup.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -88,9 +189,9 @@ jobs:
           git submodule update --remote -- upstream_repo
       -
         name: Set up QEMU
-        uses: docker/setup-qemu-action@v1
+        uses: docker/setup-qemu-action@v4
       - name: Log in to the Container registry
-        uses: docker/login-action@f054a8b539a109f9f41c372932f1ae047eff08c9
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -106,8 +207,9 @@ jobs:
           sudo rm -rf build
           git clean -fdX
       - name: Upload to github artifact
-        uses: NyaMisty/upload-artifact-as-is@master
+        uses: actions/upload-artifact@v7
         with:
+          name: AltServer-${{ matrix.arch }}
           path: /tmp/build_output
 
   release:
@@ -115,12 +217,14 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     needs: [build]
     name: "release"
+    permissions:
+      contents: write
     steps:
     - name: "Create artifact directory"
       run: |
         mkdir -p build_output
     - name: "Download all artifacts"
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v8
       with:
         path: build_output
     - name: "Rearrange artifacts"
@@ -131,7 +235,7 @@ jobs:
         ls build_release
         if [ "$(ls -A build_release)" ]; then exit 0; else exit 1; fi
     - name: Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v3
       with:
         files: build_release/*
       env:
@@ -141,9 +245,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check, build]
     if: ${{ needs.check.outputs.updated == '1' }}
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -158,4 +264,3 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
-        

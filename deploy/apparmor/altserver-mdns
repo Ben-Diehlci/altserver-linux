@@ -1,0 +1,80 @@
+# AppArmor profile for the AltServer containers.
+#
+# WHY THIS EXISTS. Docker's docker-default profile contains no dbus rules at all, and AppArmor
+# denies a mediated class a profile does not mention. avahi-compat reaches avahi-daemon over the
+# system bus, so the very first call a D-Bus client makes is refused:
+#
+#   apparmor="DENIED" operation="dbus_method_call" bus="system"
+#   path="/org/freedesktop/DBus" member="Hello" label="docker-default"
+#
+# The visible symptom is DNSServiceRegister returning -65553 (Refused) and the server being
+# silently undiscoverable -- while sockets, D-Bus policy and uid all look perfectly correct,
+# because none of them are ever consulted.
+#
+# This is docker-default plus the narrowest D-Bus rules that make Bonjour work. Everything
+# docker-default denies is still denied. Use it INSTEAD of `apparmor=unconfined`, which drops
+# AppArmor for the container entirely.
+#
+# ---------------------------------------------------------------------------------------------
+# INSTALL ON THE HOST -- this cannot be done from the image or from compose. AppArmor profiles are
+# loaded into the host kernel by root; `security_opt: apparmor=<name>` only SELECTS an
+# already-loaded profile. See deploy/apparmor/install.sh.
+#
+#   sudo cp deploy/apparmor/altserver-mdns /etc/apparmor.d/altserver-mdns
+#   sudo apparmor_parser -r -W /etc/apparmor.d/altserver-mdns
+#
+# Then in the stack, replace the `apparmor=unconfined` entries with:
+#
+#   security_opt:
+#     - apparmor=altserver-mdns
+# ---------------------------------------------------------------------------------------------
+
+#include <tunables/global>
+
+profile altserver-mdns flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network,
+  capability,
+  file,
+  umount,
+
+  # --- the entire point of this profile ------------------------------------------------------
+  # Scoped to the two peers a Bonjour client actually needs: the bus itself, for the handshake,
+  # and the Avahi service. It cannot talk to systemd, NetworkManager, or anything else on the bus.
+  dbus send
+       bus=system
+       path=/org/freedesktop/DBus
+       interface=org.freedesktop.DBus
+       member={Hello,AddMatch,RemoveMatch,GetNameOwner,NameHasOwner,StartServiceByName}
+       peer=(name=org.freedesktop.DBus),
+
+  dbus (send, receive)
+       bus=system
+       peer=(name=org.freedesktop.Avahi),
+
+  dbus receive
+       bus=system
+       peer=(name=org.freedesktop.DBus),
+  # -------------------------------------------------------------------------------------------
+
+  # Everything below is docker-default, unchanged.
+  deny @{PROC}/* w,
+  deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9]*}/** w,
+  deny @{PROC}/sys/[^k]** w,
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny mount,
+
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  ptrace (trace,read,tracedby,readby) peer=altserver-mdns,
+}
