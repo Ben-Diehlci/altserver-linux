@@ -394,6 +394,185 @@ Two fixes, MUTUALLY EXCLUSIVE -- a bumped libimobiledevice rejects v0.1.4's layo
 Pinning netmuxd to v0.1.4 is a DIAGNOSTIC ONLY: it predates the heartbeat, the async pair-record
 cache, and iOS 26.4+ TXT matching, on an iOS 26 phone.
 
+### FIXED 2026-09-14: the sockaddr layout bug above, now patched -- and there were THREE sites, not two
+
+Option 2 from the section above, implemented. The bug is no longer inferred from reading two trees:
+it was **observed in production** on this deployment, then fixed and the fix proven.
+
+**Runtime confirmation.** `docker logs netmuxd` emitted, for the phone:
+
+```
+ConnectionType: "Network"
+NetworkAddress: Data(02 00 00 00 C0 A8 08 2D ...)   Len: 128
+```
+
+`02 00` is `sin_family` as a little-endian `uint16` -- the **Linux** layout, exactly as predicted.
+`00 00` is the port (zero; harmless, see below) and `C0 A8 08 2D` is 192.168.8.45. In the same
+window AltServer logged a successful mDNS advertisement, accepted a 124932582-byte app upload from
+AltStore, fetched anisette with HTTP 200, and then:
+
+```
+Unzipping .ipa...
+Failed to handle request:There was an error connecting to the device.
+```
+
+Discovery, client connection and anisette all worked. Only the device connection failed. That is
+the signature the section above predicted.
+
+**CORRECTION to the section above: there are three affected sites, and it named the wrong one as
+critical.** The old note said "must fix BOTH sites, since `addrlen` at :287 truncates before :483
+is ever reached." That causal chain is wrong. `:287` lives in `idevice_get_device_list_extended`,
+which AltServer does **not** use to open a connection. AltServer calls
+`idevice_new_with_options` (`upstream_repo/AltServer/DeviceManager.cpp:757` and eight other call
+sites), which is `idevice.c:401` and reaches the mux device through a **third** site:
+
+| # | Site | Function | On AltServer's connect path? |
+|---|---|---|---|
+| 1 | `idevice.c:287` | `idevice_get_device_list_extended` | No -- enumeration only |
+| 2 | `idevice.c:388` | `idevice_from_mux_device`, called from `idevice_new_with_options:416` | **Yes -- this is the one that bit** |
+| 3 | `idevice.c:483` | `idevice_connect` family test | **Yes** |
+
+Sites 1 and 2 are the same `conn_data[0]`-as-length bug in two different functions. Anyone
+following the old note would have patched 1 and 3, left 2 alone, and still had `malloc(2)` with a
+truncated address on the live path. All three are fixed.
+
+**Severity was understated, too.** This is not only a functional bug. With byte 0 = `0x02` the
+allocation is **2 bytes**, and `idevice_connect` then reads **14 or 26** bytes out of it -- a heap
+over-read on every wireless connection attempt, not merely a failed one.
+
+**The fix.**
+
+| File | Role |
+|---|---|
+| `makefiles/libimobiledevice-build/rewrite_idevice_source.py` | NEW. Rewrites the three sites |
+| `makefiles/libimobiledevice-build/libimobiledevice.mak` | Wires the rewriter in |
+| `tests/check_conn_data_layout.py` | NEW. Regression guard, runs in CI |
+
+It is a **build-time source rewriter**, not an edit to the submodule, because
+`libraries/libimobiledevice` is a submodule: editing it in place could not be committed here --
+only the submodule pointer would move, to a commit that does not exist upstream, breaking every
+fresh clone. This is the same convention `rewrite_altserver_source.py`, `rewrite_altsign_source.py`
+and `rewrite_ldid_source.py` already use.
+
+Two things made the patch much smaller than expected:
+
+* **Both layouts put the port at offset 2 and the address at offset 4.** Only the first two bytes
+  differ. So the existing `memcpy(&saddr->sa_data[0], conn_data + 2, 14 /* or 26 */)` was already
+  correct for both, and `sa_data` begins at offset 2 on Linux as well. Only the family test and the
+  copy length needed to change.
+* **Detection is unambiguous.** Byte 1 is the family on BSD (never 0 for AF_INET/AF_INET6) and the
+  high half of a little-endian `uint16` family on Linux (always 0). No collision:
+
+  | Layout | byte 0 | byte 1 |
+  |---|---|---|
+  | BSD AF_INET | `sa_len` | `0x02` |
+  | BSD AF_INET6 | `sa_len` | `0x1E` |
+  | Linux AF_INET | `0x02` | `0x00` |
+  | Linux AF_INET6 | `0x0A` | `0x00` |
+
+For the two length sites it now allocates and copies a **fixed 28 bytes** -- the largest form
+`idevice_connect` reads back (`sockaddr_in6` plus scope id) -- instead of trusting byte 0. Safe
+because the source, `usbmuxd_device_info_t::conn_data`, is a fixed `uint8_t[200]`
+(`libraries/libusbmuxd/include/usbmuxd.h:55`). That removes the under-allocation class outright
+rather than computing a size that could be wrong again.
+
+**The zero port does not matter.** `socket_connect_addr(saddr, port)`
+(`libraries/libimobiledevice-glue/src/socket.c`) overwrites `sin_port` / `sin6_port` from its own
+`port` argument before connecting, so netmuxd's zero is never used.
+
+**Verification done.**
+
+* Compiles clean, no warnings, in the Alpine buildenv. `make -n` confirms the explicit rule beats
+  the generic `objs/%.c.o` pattern rule: `idevice.c.o` builds from the rewritten copy, every other
+  file still builds from the original tree untouched.
+* The rewriter `sys.exit(1)`s with an explanatory message if any pattern stops matching, so a
+  submodule bump fails the build loudly instead of silently shipping a binary without the fix.
+  (Note: `rewrite_altserver_source.py` does **not** do this -- it has no `raise`/`assert`/
+  `sys.exit` at all, so the README's claim that every rewriter "fails the build loudly" is true of
+  three of the four, now including this one.)
+* `tests/check_conn_data_layout.py` compiles the **shipped** macros -- extracted from the
+  rewriter's output, never retyped -- against real captured bytes including netmuxd's own
+  `02 00 00 00 C0 A8 08 2D`, and asserts the patched source is structurally correct (no raw
+  `conn_data[0]` / `[1]` indexing survives outside the macro definitions).
+* **Mutation-tested.** Seven deliberate regressions were introduced one at a time and all seven
+  failed the test: BSD-only `IS_INET`, BSD-only `IS_INET6`, a family-collision, a moved anchor,
+  byte-0-as-length restored as a `malloc` argument, only one of the two copy sites fixed, and a
+  `memcpy` length reverted.
+* Under `CI=1` the test **refuses to skip**: a missing submodule or missing compiler is a failure,
+  not a green pass. An earlier draft would have skipped silently in the `guards` job, which checks
+  out no submodules -- the exact "test that cannot fail" trap already recorded twice in this log.
+
+**Three defects were found by adversarial review AFTER the patch looked finished, and all three
+were reproduced before being fixed.** Recorded because two of them are traps that would recur:
+
+1. **The new build rule raced against itself and broke the build ~1 run in 3.** The root
+   `Makefile:24` declares `$(BUILD_DIR)/libimobiledevice.a $(BUILD_DIR)/libplist.a :` as a single
+   **multi-target** rule. GNU make expands that into two independent targets each carrying the same
+   recursive recipe, both are `.PHONY`, and both are reachable in parallel -- so
+   `libimobiledevice.mak` runs **twice, concurrently**, on every build. Every shipping build is
+   parallel (`-j3` in CI, `-j$(nproc)` in the Dockerfile). Two sub-makes writing one fixed
+   `idevice.c.tmp` meant one renamed it away and the other's `mv` failed outright:
+
+   ```
+   mv: can't rename '.../patched/libimobiledevice/idevice.c.tmp': No such file or directory
+   make: *** [.../idevice.c] Error 1
+   ```
+
+   Measured **2 failures in 6 runs**. Fixed with a per-process temp name (`$@.$$$$.tmp`).
+   Now **0 failures in 12 runs**. The single clean `-j$(nproc)` build done before review was luck,
+   not evidence -- a reminder that one green parallel build proves nothing about a race.
+
+2. **The first attempt at that fix failed 100% of the time, for a different reason.** Make runs
+   **each recipe line in its own shell**, so with the write on one line and the `mv` on the next,
+   the two shells expanded `$$` to two different pids and the rename could never find its file.
+   The write and the rename must stay on **one line joined by `&&`**. Worth remembering: the
+   broken form fails always, which is at least loud -- it was the *first* version, with a shared
+   temp, that failed intermittently and would have reached CI.
+
+3. **The regression guard counted `ALTSERVER_CD_SIZE` but never checked its value.** Setting it to
+   `2` -- byte for byte the original bug, since that is what the unpatched code computed from
+   netmuxd's `02 00 ...` blob -- still passed green, and the test's own success message claimed
+   "both copies bounded". `16` was subtler and more dangerous: IPv4 keeps working and only IPv6
+   over-reads, so it would ship and fail intermittently. Fixed with a `_Static_assert` on the
+   shipped constant plus a runtime case that copies through an `ALTSERVER_CD_SIZE` buffer. The
+   mutation suite now stands at **nine mutants, all caught**.
+
+The lesson from 3 is the one this log keeps relearning: *asserting that a token appears is not
+asserting that the code is correct.* The first version of this guard checked for the literal
+string `"conn_data)[0];"` -- with a trailing semicolon -- and a mutant that reintroduced the same
+read as a `malloc()` argument, with no semicolon, sailed straight through.
+
+**Still unproven: that refresh now succeeds end to end.** The fix is correct at the byte level and
+the build is clean, but it has not yet run against the phone. That needs a rebuilt image deployed
+to the stack. Until then this is "the connect path can now parse the address netmuxd sends", not
+"refresh works".
+
+Two traps from earlier in this log still apply to testing it:
+
+* `docker exec altserver idevice_id -l` uses **Debian's** post-2023 libimobiledevice, not the
+  vendored 2021 copy AltServer links. It parsed this address correctly all along. A green result
+  there is still not evidence about AltServer.
+* The status page cannot see this either, for the same reason.
+
+### CONFIRMED 2026-09-14: mDNS advertising now works after the AppArmor redeploy
+
+The `-65553` / `Bonjour Registration Error: -65537` was the **old** container running under
+`docker-default`. The user's `dmesg` matched the prediction in `deploy/apparmor/altserver-mdns`
+word for word:
+
+```
+apparmor="DENIED" operation="dbus_method_call" bus="system"
+path="/org/freedesktop/DBus" member="Hello" label="docker-default"
+```
+
+After redeploying with `apparmor=unconfined`, the new container logs
+`Advertising this server over mDNS as _altserver._tcp on port 51693`, and from another machine
+`avahi-browse -rt _altserver._tcp` shows `altserver-host` on `ens18 IPv4 192.168.9.16` with
+`txt = ["serverID=1234567"]`. AltStore found it and connected.
+
+Remaining `dmesg` denials are from ad-hoc `docker run` / `docker exec` diagnostics, which do not
+inherit the stack's `security_opt`. They are noise, not a regression.
+
 ### CONFIRMED 2026-09-14: the status page CANNOT detect the bug above -- it reports green
 
 `web/status_checks.py` shells out to `idevice_id` / `idevicepair`, which are **Debian's**
@@ -872,6 +1051,28 @@ Consequences, and they are exactly the wrong shape for a headless box:
 
 ### Next up
 
+0. **Deploy and prove the wireless-refresh fix.** The sockaddr patch is written, builds clean and
+   is mutation-tested, but has never run against the phone. Rebuild the image, redeploy the stack,
+   trigger a refresh from AltStore, and confirm `Failed to handle request:There was an error
+   connecting to the device.` is gone. Remember that `idevice_id -l` and the status page both use
+   **Debian's** post-2023 libimobiledevice and were green throughout the bug -- neither can confirm
+   this. The only real evidence is AltServer's own log.
+0b. **`makefiles/rewrite_altserver_source.py` fails silently.** It has no `raise`, `assert` or
+   `sys.exit` anywhere, so any substitution whose pattern stops matching after an `upstream_repo`
+   bump produces a quietly wrong binary rather than a failed build. It is the largest rewriter and
+   it patches the code that talks to Apple. The other three rewriters all guard themselves; give
+   this one the same treatment (a `replace_once`-style helper that counts matches and exits
+   non-zero with the reason). README.md's build section documents the gap in the meantime.
+0c. **The libimobiledevice sub-make runs twice on every build.** Pre-existing, found while fixing
+   the race above. `Makefile:24` is a multi-target `.PHONY` rule, so `libimobiledevice.mak` is
+   invoked once for `libimobiledevice.a` and again for `libplist.a`, concurrently under `-j`. Both
+   copies compile the same ~40 objects to the same paths and both run `ar rcs` on the same
+   archives. That is wasted build time, and two `cc` processes writing one `.o` is a latent
+   corruption risk for every object, not just the patched one. The rewrite rule is now safe
+   against it, but the duplication remains. Fix by giving the sub-make a single entry point, e.g.
+   `$(BUILD_DIR)/libplist.a : $(BUILD_DIR)/libimobiledevice.a` with the recursive recipe only on
+   the latter. Not done here: it changes shared build structure and did not belong in the same
+   commit as a correctness fix.
 1. **`ServerError` recovery suggestion is Windows-only advice.** `ServerError.hpp:170` returns
    "download the latest versions of iTunes and iCloud… not from the Microsoft Store" for
    `InvalidAnisetteData`, appended to the CLI alert by `AltServerApp.cpp:1614`. Now newly
