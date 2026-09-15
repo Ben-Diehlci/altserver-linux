@@ -1,12 +1,61 @@
 #!/usr/bin/python3
+"""Rewrite AltServer-Windows sources into something that compiles on Linux.
 
+WHY THIS FILE HAS GUARDS. `upstream_repo` is a submodule of rileytestut/AltServer-Windows, and
+every source in it is passed through here on the way to the compiler. The substitutions below are
+matched against upstream text: if upstream renames a symbol, reflows a function signature, or
+changes an include, a pattern silently stops matching and the build still succeeds -- producing a
+binary that is quietly missing a transformation. This is the rewriter that strips the Win32 GUI
+and splices in the console implementations of Authenticate, ShowAlert and Start, so "quietly
+missing" here means the parts that talk to Apple.
+
+The other three rewriters (AltSign, ldid, idevice) already fail loudly. This one had no `raise`,
+`assert` or `sys.exit` anywhere.
+
+TWO KINDS OF CHECK, because the two kinds of substitution fail differently:
+
+  * The AltServerApp.cpp block runs for exactly one file and every substitution in it is
+    mandatory, so each one asserts a match count. The counts are measured from the current
+    submodule, not guessed -- note strsafe.h appears TWICE.
+
+  * The global substitutions run over all 35 files in the directory, including binaries like
+    MenuBarIcon.ico and Resource.aps. Most legitimately match zero times in any given file, so a
+    per-file count would be meaningless. They are checked as POST-CONDITIONS on the output
+    instead: no L"..." literal, no boost::filesystem, no bare std::wstring may survive. That is
+    strictly stronger than counting, because it also catches an occurrence arriving in a NEW form
+    the pattern was never written to handle.
+"""
+
+import os
 import re
 import sys
 
 F = sys.argv[1]
+NAME = os.path.basename(F)
 
 with open(F, 'rb') as f:
     content = f.read()
+
+
+def _fail(what, detail):
+    sys.stderr.write(
+        "rewrite_altserver_source.py: %s\n"
+        "  file:   %s\n"
+        "  detail: %s\n"
+        "The vendored AltServer-Windows source has moved and this rewrite no longer applies as\n"
+        "written. Re-derive it before shipping: the build would otherwise succeed and produce a\n"
+        "binary silently missing this transformation.\n" % (what, F, detail))
+    sys.exit(1)
+
+
+def sub_literal(text, token, expect):
+    """Delete/replace a literal, asserting how many times it was found."""
+    found = text.count(token)
+    if found < expect:
+        _fail("expected at least %d occurrence(s) of %r, found %d"
+              % (expect, token.decode('utf-8', 'replace'), found), "literal substitution")
+    return text.replace(token, b'')
+
 
 content = re.sub(br'L("([^"\\]|\\.)*")', br'U(\1)', content)
 content = re.sub(br'\n(std::string StringFromWideString.*?\n\{[\s\S]+?\})', br'/*\1*/', content)
@@ -24,17 +73,25 @@ if F.endswith('AltServerApp.cpp'):
     # fs::path AltServerApp::appDataDirectoryPath
     content = content.replace(b'\r', b'')
 
-    content = content.replace(b'#include <windows.h>\n', b'')
-    content = content.replace(b'#include <windowsx.h>\n', b'')
-    content = content.replace(b'#include <strsafe.h>\n', b'')
-    content = content.replace(b'#include <ShlObj_core.h>\n', b'')
-    content = content.replace(b'#include <winsparkle.h>\n', b'')
-    content = content.replace(b'#pragma comment( lib, "gdiplus.lib" ) \n', b'')
-    content = content.replace(b'#include <gdiplus.h> \n', b'')
-    content = content.replace(b'#include "resource.h"\n', b'')
+    # Counts measured against the current submodule. strsafe.h really is included twice.
+    for token, expect in (
+        (b'#include <windows.h>\n', 1),
+        (b'#include <windowsx.h>\n', 1),
+        (b'#include <strsafe.h>\n', 2),
+        (b'#include <ShlObj_core.h>\n', 1),
+        (b'#include <winsparkle.h>\n', 1),
+        (b'#pragma comment( lib, "gdiplus.lib" ) \n', 1),
+        (b'#include <gdiplus.h> \n', 1),
+        (b'#include "resource.h"\n', 1),
+    ):
+        content = sub_literal(content, token, expect)
 
     def removePart(content, start, end):
-        content = re.sub(br'\n' + start + br'[\S\s]+?(' + end + br')', br'\1', content)
+        pattern = br'\n' + start + br'[\S\s]+?(' + end + br')'
+        if not re.search(pattern, content):
+            _fail("block removal matched nothing", "from %r to %r"
+                  % (start.decode('utf-8', 'replace'), end.decode('utf-8', 'replace')))
+        content = re.sub(pattern, br'\1', content)
         return content
     content = removePart(content, br'const char\* REGISTRY_ROOT_KEY', br'\nAltServerApp\* AltServerApp::_instance')
     content = removePart(content, br'static int CALLBACK BrowseFolderCallback', br'\npplx::task<std::shared_ptr<Application>> AltServerApp::InstallApplication')
@@ -43,6 +100,9 @@ if F.endswith('AltServerApp.cpp'):
     content = removePart(content, br'bool AltServerApp::CheckDependencies', br'\nfs::path AltServerApp::certificatesDirectoryPath')
 
     def insertBefore(content, marker, newcontent):
+        if content.count(marker) != 1:
+            _fail("insertion marker occurs %d times, expected exactly 1" % content.count(marker),
+                  marker.decode('utf-8', 'replace'))
         content = content.replace(marker, newcontent + b'\n' + marker)
         return content
     
@@ -159,5 +219,22 @@ void AltServerApp::Stop()
 {
 }
 ''')
+
+
+# --- Post-conditions on the output -----------------------------------------------------------
+# Only for C/C++ text. The directory also holds .ico, .aps, .png and .rc, where these byte
+# sequences could occur by coincidence and mean nothing.
+if NAME.endswith(('.cpp', '.c', '.h', '.hpp')):
+    for pattern, why in (
+        (br'(?<![A-Za-z0-9_])L"', 'a wide string literal survived; U("...") is what compiles here'),
+        (br'std::wstring(?!_convert)', 'a bare std::wstring survived (std::wstring_convert is fine)'),
+        (br'boost::filesystem', 'boost::filesystem survived; the build links std::filesystem'),
+        (br'boost/filesystem\.hpp', 'the boost/filesystem.hpp include survived'),
+    ):
+        m = re.search(pattern, content)
+        if m:
+            line = content[:m.start()].count(b'\n') + 1
+            _fail("post-condition failed at line %d: %s" % (line, why),
+                  content[max(0, m.start() - 40):m.start() + 40].decode('utf-8', 'replace'))
 
 sys.stdout.buffer.write(content)

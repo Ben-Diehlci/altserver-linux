@@ -1442,7 +1442,10 @@ Consequences, and they are exactly the wrong shape for a headless box:
    connecting to the device.` is gone. Remember that `idevice_id -l` and the status page both use
    **Debian's** post-2023 libimobiledevice and were green throughout the bug -- neither can confirm
    this. The only real evidence is AltServer's own log.
-0b. **`makefiles/rewrite_altserver_source.py` fails silently.** It has no `raise`, `assert` or
+0b. ~~**`makefiles/rewrite_altserver_source.py` fails silently.**~~ **DONE 2026-09-15** — guarded
+   with match counts on the mandatory AltServerApp.cpp substitutions and post-conditions on the
+   output for the global ones. Output verified byte-identical across all 35 files; nine mutations
+   caught. Original note: It has no `raise`, `assert` or
    `sys.exit` anywhere, so any substitution whose pattern stops matching after an `upstream_repo`
    bump produces a quietly wrong binary rather than a failed build. It is the largest rewriter and
    it patches the code that talks to Apple. The other three rewriters all guard themselves; give

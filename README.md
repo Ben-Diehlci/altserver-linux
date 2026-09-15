@@ -360,15 +360,23 @@ Patches to vendored code live in those rewriters rather than in the submodule, b
 libraries are submodules: an edit in place cannot be committed here — only the submodule pointer
 would move, to a commit that does not exist upstream, breaking every fresh clone.
 
-| Rewriter | Fails the build if its pattern stops matching |
-|---|---|
-| `makefiles/rewrite_altserver_source.py` | **No.** It has no `raise`, `assert` or `sys.exit` at all — a substitution that silently stops matching produces a quietly wrong binary |
-| `makefiles/AltSign-build/rewrite_altsign_source.py` | Yes |
-| `makefiles/AltSign-build/rewrite_ldid_source.py` | Yes |
-| `makefiles/libimobiledevice-build/rewrite_idevice_source.py` | Yes |
+**Every rewriter fails the build if its patterns stop matching**, rather than emitting a binary
+that is quietly missing a transformation:
 
-That first row is a real gap, not a stylistic one: it is the largest rewriter and it patches the
-code that talks to Apple. Fixing it is on the TODO list in [REVIVAL.md](docs/REVIVAL.md).
+| Rewriter | How it fails loudly |
+|---|---|
+| `makefiles/rewrite_altserver_source.py` | Match counts on the AltServerApp.cpp substitutions, plus post-conditions on the output |
+| `makefiles/AltSign-build/rewrite_altsign_source.py` | Match assertions |
+| `makefiles/AltSign-build/rewrite_ldid_source.py` | Match assertions |
+| `makefiles/libimobiledevice-build/rewrite_idevice_source.py` | Match assertions |
+
+The first one needs both kinds because its substitutions fail differently. The AltServerApp.cpp
+block runs for one file and every substitution in it is mandatory, so each asserts a count. The
+global ones run over all 35 files in the directory — including binaries like `MenuBarIcon.ico` —
+and legitimately match zero times in most, so a count would be meaningless; they are checked as
+post-conditions on the output instead (no `L"…"` literal, no `boost::filesystem`, no bare
+`std::wstring` may survive). That is stronger than counting, because it also catches an occurrence
+arriving in a form the pattern was never written to handle.
 
 ### Building the buildenv image
 
