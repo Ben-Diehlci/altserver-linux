@@ -23,6 +23,12 @@ on:
       - 'src/**'
       - 'shims/**'
       - 'makefiles/**'
+      # The same failure as web/** above, one level down. The libraries/ submodules
+      # (libimobiledevice, libusbmuxd, libplist, libimobiledevice-glue, ideviceinstaller) and the
+      # plain sources in libraries/dnssd_loader are COMPILED into the -static binary by the build
+      # stage's `make`, so bumping one changes the SHIPPED BINARY. Without this entry the image
+      # would keep the old binary and nothing would indicate it was stale.
+      - 'libraries/**'
       - 'Makefile'
       - 'upstream_repo'
       - '.github/workflows/build_image.yml'
