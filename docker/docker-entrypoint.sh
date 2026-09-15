@@ -31,7 +31,9 @@ fi
 # Fail open: if python3 or the filter is missing, log unfiltered rather than not at all. A server
 # you cannot debug is worse than a credential in a log you already had.
 if [ -x /usr/local/bin/redact-log ] && command -v python3 >/dev/null 2>&1; then
-    exec 1> >(exec /usr/local/bin/redact-log)
+    # --tee also appends to the shared volume so the web UI can show a live view without
+    # the Docker socket. Everything written there has already been redacted.
+    exec 1> >(exec /usr/local/bin/redact-log --tee /data/altserver.log)
     exec 2>&1
 else
     echo "entrypoint: WARNING -- log redaction unavailable; credentials will appear in docker logs" >&2

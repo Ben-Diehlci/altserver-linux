@@ -97,6 +97,15 @@ PAGE = """<!doctype html>
   .overall.ok{background:var(--okbg);color:var(--ok)} .overall.warn{background:var(--warnbg);color:var(--warn)}
   .overall.fail{background:var(--failbg);color:var(--fail)}
   footer { color:var(--muted); font-size:.8rem; margin-top:1.5rem; }
+  button.act { font:inherit; font-size:.85rem; font-weight:600; padding:.35rem .8rem;
+               border:1px solid var(--line); border-radius:7px; background:var(--card);
+               color:var(--fg); cursor:pointer; }
+  button.act:hover { border-color:var(--muted); }
+  button.act[aria-pressed="true"] { background:var(--okbg); color:var(--ok); border-color:var(--ok); }
+  pre.logout { margin:.7rem 0 0; padding:.6rem .7rem; max-height:24rem; overflow:auto;
+               background:var(--unknownbg); border-radius:7px; font-size:.8rem; line-height:1.45;
+               font-family:ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap;
+               word-break:break-word; }
   nav.tabs { display:flex; flex-wrap:wrap; gap:.15rem; margin-bottom:1.4rem;
              border-bottom:1px solid var(--line); }
   nav.tabs a { padding:.5rem .8rem; margin-bottom:-1px; font-size:.9rem; font-weight:600;
@@ -117,6 +126,15 @@ PAGE = """<!doctype html>
     </div>
   </header>
   <div id="checks"></div>
+
+  <div class="card" style="margin-top:1rem">
+    <div class="row">
+      <button class="act" id="logtoggle" aria-pressed="false">Watch refresh log</button>
+      <span class="summary" id="logstate">Not watching. Start this, then trigger a refresh from AltStore.</span>
+    </div>
+    <pre class="logout" id="logout" hidden></pre>
+  </div>
+
   <footer>
     Refreshes every 30s. Read-only &mdash; this page does not sign in or change anything.
     Raw JSON at <code>/api/status</code>.
@@ -149,6 +167,54 @@ async function load() {
 }
 function esc(s){ return String(s).replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+let logTimer = null;
+const logBtn = document.getElementById('logtoggle');
+const logOut = document.getElementById('logout');
+const logState = document.getElementById('logstate');
+
+async function pollLog(){
+  try {
+    const d = await (await fetch('/api/logs', {cache:'no-store'})).json();
+    if (!d.available) {
+      logState.textContent = d.why || 'No log available.';
+      logOut.hidden = true;
+      return;
+    }
+    const atBottom = logOut.scrollTop + logOut.clientHeight >= logOut.scrollHeight - 30;
+    logOut.hidden = false;
+    logOut.textContent = d.lines.length ? d.lines.join(String.fromCharCode(10)) : '(log is empty)';
+    logState.textContent = d.lines.length + ' line(s) \u2014 watching';
+    if (atBottom) { logOut.scrollTop = logOut.scrollHeight; }
+  } catch (e) {
+    logState.textContent = 'Could not read the log.';
+  }
+}
+
+// Watching stops itself after this long. A refresh takes seconds, so anything beyond a few
+// minutes means the tab was left open -- and an abandoned tab polling every 2s forever is a
+// self-inflicted load on a box whose whole job is to sit quietly and refresh apps.
+const LOG_WATCH_MS = 5 * 60 * 1000;
+let logStopTimer = null;
+
+function setWatching(on, reason){
+  logBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  logBtn.textContent = on ? 'Stop watching' : 'Watch refresh log';
+  clearTimeout(logStopTimer); logStopTimer = null;
+  if (on) {
+    pollLog();
+    logTimer = setInterval(pollLog, 2000);
+    logStopTimer = setTimeout(function(){
+      setWatching(false, 'Stopped automatically after 5 minutes. Click to watch again.');
+    }, LOG_WATCH_MS);
+  } else {
+    clearInterval(logTimer); logTimer = null;
+    logState.textContent = reason ||
+      'Stopped. The log keeps being written; nothing is being polled.';
+  }
+}
+
+logBtn.addEventListener('click', () => setWatching(logTimer === null));
+
 load(); setInterval(load, 30000);
 </script>
 </body>
@@ -373,6 +439,31 @@ class Handler(BaseHTTPRequestHandler):
                 data = {"steps": [{"title": "Pairing check failed", "state": "blocked",
                                    "detail": str(exc), "action": "", "note": ""}],
                         "udids": [], "paired": False, "next": "Pairing check failed"}
+            self._send(200, json.dumps(data), "application/json")
+        elif path == "/api/logs":
+            # AltServer's own output, as redacted by docker/redact-log.py --tee. Read from the
+            # volume both containers share, so this needs no Docker socket -- which would be
+            # root-on-host for a service that already takes an Apple ID password over plain HTTP.
+            #
+            # Read-only and tail-bounded: a refresh is a few dozen lines, and the file itself is
+            # capped by the filter.
+            path_log = os.environ.get("ALTSERVER_LOG", "/data/altserver.log")
+            try:
+                size = os.path.getsize(path_log)
+                with open(path_log, "r", encoding="utf-8", errors="replace") as f:
+                    if size > 200_000:
+                        f.seek(size - 200_000)
+                        f.readline()
+                    lines = f.read().splitlines()[-400:]
+                data = {"lines": lines, "available": True, "path": path_log}
+            except FileNotFoundError:
+                data = {"lines": [], "available": False, "path": path_log,
+                        "why": "No log yet at %s. It appears once AltServer has written a line; "
+                               "an image built before the log view was added will not create it."
+                               % path_log}
+            except Exception as exc:
+                data = {"lines": [], "available": False, "path": path_log,
+                        "why": "Could not read %s: %s" % (path_log, exc)}
             self._send(200, json.dumps(data), "application/json")
         elif path == "/api/status":
             try:

@@ -231,6 +231,17 @@ Reachable at `http://<your-host>:8099` once the stack is up.
 | `/pairing` | Guided pairing, distinguishing the "nothing shows up" cases |
 | `/install` | Apple ID sign-in with 2FA entry in the browser |
 
+The status page also carries a **live log view**. Start it, trigger a refresh from AltStore,
+and watch AltServer's own output -- which is the only thing that can actually confirm a
+refresh worked, since `idevice_id` and the wireless status row both use Debian's
+libimobiledevice rather than the vendored copy AltServer links.
+
+It reads a file on the volume the two containers share, written by the same redaction
+filter that protects `docker logs` -- so the web UI needs neither the Docker socket (which
+would be root-on-host for a service that takes an Apple ID password over plain HTTP) nor a
+host bind mount, and what it shows is already redacted. Polling runs only while watching is
+on, and stops itself after five minutes so a forgotten tab does not poll forever.
+
 The status page exists because **this software cannot report its own health.** avahi can report a
 successful registration while publishing nothing; AltStore suppresses the one error it would raise
 during a background refresh; and nearly everything is logged to stdout at info level, so
