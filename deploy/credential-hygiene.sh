@@ -67,10 +67,18 @@ for c in altserver altserver-web anisette netmuxd; do
     fi
     size=$(sudo du -h "$logpath" 2>/dev/null | cut -f1)
     # Count, never print. A hit means credential material is sitting in this file.
-    hits=$(sudo grep -aicE 'GsIdmsToken|com\.apple\.gs\.|adsid|DsPrsId|MachineID|X-Apple-I-MD' "$logpath" 2>/dev/null)
+    # Count lines that carry a marker but are NOT already redacted. Since docker/redact-log.py
+    # masks the VALUE and keeps the LABEL, a successfully filtered line still contains the word
+    # "MachineID" -- so a naive marker count reports a leak for a log that is doing its job.
+    hits=$(sudo grep -aiE 'GsIdmsToken|com\.apple\.gs\.|adsid|DsPrsId|MachineID|X-Apple-I-MD' "$logpath" 2>/dev/null \
+           | grep -avc '\[withheld\]')
     hits=${hits:-0}
+    redacted=$(sudo grep -ac '\[withheld\]' "$logpath" 2>/dev/null)
+    redacted=${redacted:-0}
     if [ "${hits:-0}" -gt 0 ]; then
         flag "$c: ${size:-?} log, $hits line(s) carrying credentials or machine identity"
+    elif [ "${redacted:-0}" -gt 0 ]; then
+        note "$c: ${size:-?} log, clean -- $redacted line(s) redacted by the filter"
     else
         note "$c: ${size:-?} log, no credential markers found"
     fi
