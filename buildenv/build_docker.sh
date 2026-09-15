@@ -37,9 +37,14 @@ build_and_push() {
     docker push "${image}"
 }
 
-build_and_push arm32v7/alpine:3.15 armv7
-build_and_push arm64v8/alpine:3.15 aarch64
+# amd64 FIRST, deliberately. It is the only one CI consumes (build_image.yml's BUILDER arg) and
+# the only one that builds natively on a GitHub runner. The other three run under QEMU: slow, and
+# the likeliest to fail. With `set -e` above, building the fragile ones first would mean a QEMU
+# failure costs you the image you actually needed -- which is worse than the unguarded script
+# this replaced, where a failed armv7 simply fell through to amd64. Native first, emulated after.
 build_and_push amd64/alpine:3.15   amd64
+build_and_push arm64v8/alpine:3.15 aarch64
+build_and_push arm32v7/alpine:3.15 armv7
 build_and_push i386/alpine:3.15    i386
 
 echo
