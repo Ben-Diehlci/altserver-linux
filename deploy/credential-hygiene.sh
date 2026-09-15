@@ -58,7 +58,10 @@ for c in altserver altserver-web anisette netmuxd; do
         continue
     fi
     logpath=$(docker inspect -f '{{.LogPath}}' "$c" 2>/dev/null)
-    if [ -z "$logpath" ] || [ ! -e "$logpath" ]; then
+    # `test -e` must run as root: /var/lib/docker/containers is mode 0710 root:root, so an
+    # unprivileged check returns false for a file that is plainly there -- which reported
+    # "no json-file log" for every container on a host whose logs were full of credentials.
+    if [ -z "$logpath" ] || ! sudo test -e "$logpath"; then
         note "$c: no json-file log on disk (driver may not be json-file)"
         continue
     fi

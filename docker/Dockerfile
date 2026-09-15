@@ -116,7 +116,10 @@ COPY web/ /opt/altserver-web/
 
 COPY web/fetch_altstore.py /usr/local/bin/fetch-altstore
 COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint
-RUN chmod +x /usr/local/bin/fetch-altstore /usr/local/bin/docker-entrypoint
+# Filters AltServer's output so credentials never reach docker logs. It imports _redact
+# from /opt/altserver-web/installer.py above, so there is one redaction implementation.
+COPY docker/redact-log.py /usr/local/bin/redact-log
+RUN chmod +x /usr/local/bin/fetch-altstore /usr/local/bin/docker-entrypoint /usr/local/bin/redact-log
 
 # AltServerApp writes to the RELATIVE path ./AltServerData, resolved against the working
 # directory — so the workdir is load-bearing, not cosmetic. Mount a volume here to persist it.

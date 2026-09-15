@@ -41,6 +41,12 @@ services:
     image: dadoum/anisette-v3-server@sha256:1e20384985d3c49965f444bef39d627768dacc39ea0dca91f2a535edb7591ba3
     container_name: anisette
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     environment:
       # MUST stay UTC. The server stamps X-Apple-I-Client-Time from LOCAL time and appends a
       # literal "Z", so any other TZ sends Apple a timestamp wrong by your offset while claiming
@@ -102,6 +108,11 @@ services:
     network_mode: host
 
     init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
     # Runs netmuxd instead of AltServer; the normal entrypoint fetches an IPA and execs the server.
     entrypoint: ["/usr/local/bin/netmuxd"]
@@ -168,6 +179,11 @@ services:
     # signal(SIGPIPE, SIG_IGN)), so as PID 1 the kernel discards docker stop's SIGTERM and every
     # restart costs the full 10s grace period followed by SIGKILL.
     init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
     # REQUIRED, and not negotiable: mDNS/Bonjour is link-local and does not cross a Docker bridge.
     # On a bridge the phone can never discover _altserver._tcp no matter what else is correct.
@@ -252,6 +268,11 @@ services:
     container_name: altserver-web
     restart: unless-stopped
     init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
     # Same host network as altserver, so it sees the same usbmuxd, the same avahi, and can report
     # on the real _altserver._tcp advertisement rather than a bridged illusion of it.

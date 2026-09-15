@@ -27,6 +27,7 @@ all.
 
 import os
 import re
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -117,6 +118,40 @@ def main():
         print("\n%d problem(s). web/installer.py's docstring promises every line is filtered; "
               "that promise is what this test enforces." % len(problems))
         return 1
+
+    # The same filter now sits in the container's log path (docker/redact-log.py), so check the
+    # SHIPPED script, not just the function it imports. It rewrites the hardcoded
+    # /opt/altserver-web path for this run; everything else executes exactly as it does in the
+    # image.
+    filt = os.path.join(ROOT, "docker", "redact-log.py")
+    if not os.path.exists(filt):
+        print("FAIL: docker/redact-log.py is missing; container logs would be unfiltered")
+        return 1
+
+    src = open(filt).read().replace("/opt/altserver-web", os.path.join(ROOT, "web"))
+    feed = "\n".join(MUST_BE_REDACTED + MUST_BE_UNCHANGED) + "\n"
+    run = subprocess.run([sys.executable, "-c", src], input=feed,
+                         capture_output=True, text=True)
+    if run.returncode != 0:
+        print("FAIL: docker/redact-log.py exited %d\n%s" % (run.returncode, run.stderr.rstrip()))
+        return 1
+
+    out = run.stdout
+    for secret in SECRETS:
+        if secret in out:
+            print("FAIL: a secret survived docker/redact-log.py, so it would reach `docker logs`.\n"
+                  "      leaked: %s..." % secret[:40])
+            return 1
+    for line in MUST_BE_UNCHANGED:
+        if line not in out:
+            print("FAIL: docker/redact-log.py dropped or altered a progress line:\n      %s" % line)
+            return 1
+    # It must reuse installer.py rather than carry its own copy of the rules, or the two drift.
+    if "from installer import _redact" not in open(filt).read():
+        print("FAIL: docker/redact-log.py no longer imports _redact from installer.py.\n"
+              "      Two copies of a redaction filter drift, and the unwatched one rots.")
+        return 1
+    print("docker/redact-log.py filters the container log path using the same implementation.")
 
     print("%d sensitive lines redacted, %d progress lines preserved verbatim."
           % (len(MUST_BE_REDACTED), len(MUST_BE_UNCHANGED)))
