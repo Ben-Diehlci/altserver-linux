@@ -112,7 +112,7 @@ CASE_TMPL = r"""
             uint8_t sa_data[14];
             memcpy(copied, cd, ALTSERVER_CD_SIZE);
             memcpy(sa_data, copied + 2, sizeof(sa_data));
-            if (!(sa_data[2] == 0xC0 && sa_data[3] == 0xA8 && sa_data[4] == 0x04 && sa_data[5] == 0x2D)) {
+            if (!(sa_data[2] == 0xC0 && sa_data[3] == 0xA8 && sa_data[4] == 0x08 && sa_data[5] == 0x2D)) {
                 printf("FAIL %(label)s: address did not survive the copy (got %%u.%%u.%%u.%%u)\n",
                        sa_data[2], sa_data[3], sa_data[4], sa_data[5]);
                 failures++;

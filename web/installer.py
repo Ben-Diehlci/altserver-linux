@@ -12,7 +12,9 @@ REDACTION IS NOT OPTIONAL HERE. A successful sign-in prints Apple's full account
 -- real name, phone number, `adsid`, and a dozen bearer tokens including `com.apple.gs.icloud.auth`
 with a 31536000-second (one year) lifetime. Those reach `docker logs` and journald already, which
 is bad enough; rendering them into a browser page that someone screenshots would be worse. Every
-line is filtered before it leaves this module.
+line is filtered before it leaves this module, and `tests/check_redaction.py` holds that claim to
+real captured output rather than to intent -- an earlier version of this filter asserted exactly
+the same thing while printing the anisette MachineID, one-time password and local user ID in full.
 """
 
 import os
@@ -39,16 +41,51 @@ _ACCOUNT_DUMP = re.compile(r"^\s*Data:\s*<dict>")
 # The SRP debug spew: hundreds of "Byte:-42" lines.
 _BYTE_NOISE = re.compile(r"^\s*(Byte:-?\d+|HMAC_OUT:|NP:)\s*$")
 
+# The whole anisette payload on one line. It carries every X-Apple-I-* header at once, so there is
+# nothing in it worth keeping.
+_ANISETTE_JSON = re.compile(r"^\s*Got anisetteData json:", re.IGNORECASE)
+
+# Anisette machine identifiers, printed one per line by a successful sign-in. Not credentials in
+# the password sense, but together they are the stable identity this server presents to Apple, and
+# Apple rate-limits and locks accounts per identity. Until 2026-09-15 these rendered in full into
+# the browser while the docstring above claimed every line was filtered.
+#
+# The VALUE is masked and the LABEL kept, so the log still shows how far the install got.
+_LABELLED_SECRET = re.compile(
+    r"(?i)\b("
+    r"MachineID|One-Time Password|OTP|Local User ID|Device UDID|"
+    r"X-Apple-I-MD(?:-M|-LU|-RINFO)?|X-Mme-Device-Id|X-Apple-I-SRL-NO"
+    r")(\s*[:=]\s*)(\S[^\s]*(?:[^\S\n][^\s]*)*?)(?=\s\b(?:MachineID|OTP|Local User ID)\s*[:=]|$)"
+)
+
+# Backstop for identifiers not enumerated above: any long unbroken base64/hex-looking run. Kept
+# deliberately long (40) so ordinary words, paths and UUIDs are untouched.
+_LONG_BLOB = re.compile(r"(?<![\w/.-])([A-Za-z0-9+/]{40,}={0,2})(?![\w/.-])")
+
+
+def _mask_labelled(line):
+    return _LABELLED_SECRET.sub(lambda m: m.group(1) + m.group(2) + "[withheld]", line)
+
 
 def _redact(line):
-    """Return a display-safe line, or None to drop it entirely."""
+    """Return a display-safe line, or None to drop it entirely.
+
+    Order matters: whole-line rules first, then value masking, then the catch-all blob rule, so a
+    line that is wholly unsafe is never merely partially masked.
+    """
     if _BYTE_NOISE.match(line):
         return None
     if _ACCOUNT_DUMP.match(line):
         return "[Apple account record received -- withheld, it contains long-lived tokens]"
+    if _ANISETTE_JSON.match(line):
+        return "Got anisetteData json: [withheld -- carries every X-Apple-I-* identifier]"
     if _SENSITIVE.search(line):
         return "[line withheld: contains credentials or account data]"
-    # Anything long and base64-ish that survived the checks above.
+
+    line = _mask_labelled(line)
+    line = _LONG_BLOB.sub("[withheld]", line)
+
+    # Anything long that survived every check above.
     if len(line) > 400:
         return line[:200] + " ... [truncated]"
     return line

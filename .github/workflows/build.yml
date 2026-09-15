@@ -82,6 +82,12 @@ jobs:
       - name: usbmux network addresses parse in both sockaddr layouts
         run: python3 tests/check_conn_data_layout.py
 
+      # installer.py's docstring promised every line was filtered while it printed the anisette
+      # MachineID, one-time password and local user ID in full, into a page served over plain HTTP.
+      # This feeds it real captured output and fails if any secret value survives.
+      - name: Install-log redaction actually redacts
+        run: python3 tests/check_redaction.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"

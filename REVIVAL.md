@@ -1134,7 +1134,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       :8099 web UI and netmuxd-as-a-service — its Phase 0 has the reader build and scp a bare
       binary, and Phase 7 treats wireless as a manual future step, so nothing in it matches the
 
-- [ ] **A11. web/installer.py redaction misses the anisette machine identifiers it claims to filter**
+- [x] **A11. FIXED 2026-09-15. web/installer.py redaction misses the anisette machine identifiers it claims to filter**
       `web/installer.py` -- fix
       The install page footer (web/server.py:248) tells the user "Credentials and account data are
       filtered out of the log above before it is shown", and installer.py's module docstring says
@@ -1266,7 +1266,7 @@ confirm. B is a small patch. D is a substantial one. None are blocked by anythin
   **The volume mapping is proven correct**: `docker diff` shows nothing identity-related on the
   writable layer, and `adi.pb` + `device.json` + `lib/` are visible host-side at
   `/opt/stacks/anisette/config`. The `lib/`-only mount the upstream README recommends was avoided.
-  Container runs as uid 1000 = host `youruser`.
+  Container runs as uid 1000 = host user (uid 1000).
   Quirk: `adi.pb` is mode `---x-w-rwt` (written by Apple's closed-source libCoreADI), so backups
   need `sudo`.
   **Confirmed: this server returns `com.apple.dt.Xcode/3594.4.19` in `X-MMe-Client-Info`**, so the
