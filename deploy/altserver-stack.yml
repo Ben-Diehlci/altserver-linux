@@ -131,7 +131,7 @@ services:
     #   context: ..
     #   dockerfile: docker/Dockerfile
     #   args:
-    #     BUILDER: ghcr.io/nyamisty/altserver_builder_alpine_amd64
+    #     BUILDER: ghcr.io/ben-diehlci/altserver_builder_alpine_amd64
     container_name: altserver
     restart: unless-stopped
     depends_on:

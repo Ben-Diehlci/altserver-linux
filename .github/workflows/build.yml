@@ -154,10 +154,10 @@ jobs:
       - name: Pick architectures
         id: pick
         run: |
-          AMD64='{"arch":"amd64","builder":"ghcr.io/nyamisty/altserver_builder_alpine_amd64"}'
-          AARCH64='{"arch":"aarch64","builder":"ghcr.io/nyamisty/altserver_builder_alpine_aarch64"}'
-          ARMV7='{"arch":"armv7","builder":"ghcr.io/nyamisty/altserver_builder_alpine_armv7"}'
-          I386='{"arch":"i386","builder":"ghcr.io/nyamisty/altserver_builder_alpine_i386"}'
+          AMD64='{"arch":"amd64","builder":"ghcr.io/ben-diehlci/altserver_builder_alpine_amd64"}'
+          AARCH64='{"arch":"aarch64","builder":"ghcr.io/ben-diehlci/altserver_builder_alpine_aarch64"}'
+          ARMV7='{"arch":"armv7","builder":"ghcr.io/ben-diehlci/altserver_builder_alpine_armv7"}'
+          I386='{"arch":"i386","builder":"ghcr.io/ben-diehlci/altserver_builder_alpine_i386"}'
 
           if [[ "${{ github.ref }}" == refs/tags/* ]] \
              || [[ "${{ github.event_name }}" == "schedule" ]] \

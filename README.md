@@ -334,7 +334,7 @@ to end up with a server that runs, reports nothing wrong, and is invisible to yo
   and libzip):
   ```
   docker run --rm -v "$PWD":/workdir -w /workdir \
-    ghcr.io/nyamisty/altserver_builder_alpine_amd64 \
+    ghcr.io/ben-diehlci/altserver_builder_alpine_amd64 \
     bash -c 'mkdir -p build; cd build; make -f ../Makefile -j"$(nproc)"'
   ```
   Or build the container image directly: `docker build -t altserver .`

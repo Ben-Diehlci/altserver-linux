@@ -78,7 +78,7 @@ jobs:
           context: .
           file: ./docker/Dockerfile
           build-args: |
-            BUILDER=ghcr.io/nyamisty/altserver_builder_alpine_amd64
+            BUILDER=ghcr.io/ben-diehlci/altserver_builder_alpine_amd64
           platforms: linux/amd64
           push: true
           tags: |

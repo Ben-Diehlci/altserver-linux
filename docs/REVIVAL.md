@@ -61,7 +61,7 @@ colima start --vm-type=vz --vz-rosetta --cpu 8 --memory 12 --disk 60
 
 colima ssh -- bash -lc 'cd ~/altserver-linux && docker run --rm \
   -v "$HOME/altserver-linux":/workdir -w /workdir \
-  ghcr.io/nyamisty/altserver_builder_alpine_aarch64 \
+  ghcr.io/ben-diehlci/altserver_builder_alpine_aarch64 \
   bash -c "mkdir -p build; cd build; make -f ../Makefile -j8"'
 ```
 
@@ -898,7 +898,11 @@ the same code path.**
   a no-op. Likely the root of #126, unfixable in CI alone: raw GitHub Release assets never carry
   the bit. Needs docs or tarball packaging.
 - **The four `ghcr.io/nyamisty/altserver_builder_alpine_*` images are alive and public.** The
-  build depends entirely on them; nobody can currently rebuild them (see #111).
+  build depended entirely on them, and at the time nobody could rebuild them (see #111).
+  **Both halves are now resolved:** #111 is closed, and on 2026-09-15 a full set was built
+  from this repo's own `buildenv/Dockerfile` and published under `ghcr.io/ben-diehlci/`.
+  Every consumer now points there, so the fork no longer depends on another account's
+  packages staying alive.
 - **Apple versioned the corecrypto archive**: it now extracts to `corecrypto-2024/`. Docker's
   `WORKDIR` silently *creates* a missing directory, which is why the error surfaced one line
   later as a confusing "no CMakeLists.txt".
@@ -1090,11 +1094,12 @@ with `GHCR_NAMESPACE`, and lowercased because GHCR requires that (`Ben-Diehlci` 
 It also gained `set -euo pipefail`; without it a failed build fell through to the push, and a
 failed push fell through to the next architecture.
 
-**This only changes where images are PUBLISHED.** All six consumers -- both workflows,
-`docker/Dockerfile`, the commented build block in the stack, and README -- still pull
-`ghcr.io/nyamisty/altserver_builder_alpine_*`, which are public, alive, and what every build
-currently uses. Repointing them is a separate deliberate step, and doing it before this script has
-successfully published a replacement set would break the build outright.
+**At the time this only changed where images were PUBLISHED**, and every consumer still pulled
+`ghcr.io/nyamisty/altserver_builder_alpine_*` -- repointing before a replacement set existed would
+have broken the build outright. The workflow then ran successfully (about three hours; three of
+the four architectures build under QEMU), all four images published public, and a build against
+the new aarch64 image produced a working binary containing the sockaddr patch. The consumers were
+repointed after that, not before.
 
 ## Repository audit, 2026-09-15
 

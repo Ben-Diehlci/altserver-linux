@@ -18,7 +18,7 @@
 # cpprestsdk, boost and libzip this build needs. Override BUILDER for a different architecture:
 #   ..._amd64 (default) | ..._aarch64 | ..._armv7 | ..._i386
 # ---------------------------------------------------------------------------------------------
-ARG BUILDER=ghcr.io/nyamisty/altserver_builder_alpine_amd64
+ARG BUILDER=ghcr.io/ben-diehlci/altserver_builder_alpine_amd64
 
 FROM ${BUILDER} AS build
 
