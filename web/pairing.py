@@ -28,11 +28,17 @@ import subprocess
 STEP_OK, STEP_TODO, STEP_BLOCKED = "ok", "todo", "blocked"
 
 
-def _run(cmd, timeout=15):
+# netmuxd's socket, matching deploy/altserver-stack.yml. Same variable status_checks.py uses.
+NETMUXD_SOCKET = os.environ.get("ALTSERVER_NETMUXD_SOCKET", "/run/muxd/usbmuxd")
+_WIRELESS_ENV = {"USBMUXD_SOCKET_ADDRESS": "UNIX:" + NETMUXD_SOCKET}
+
+
+def _run(cmd, timeout=15, env=None):
     if shutil.which(cmd[0]) is None:
         return None, "%s is not installed" % cmd[0]
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        run_env = dict(os.environ, **env) if env else None
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=run_env)
         return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
     except subprocess.TimeoutExpired:
         return None, "%s timed out" % cmd[0]
@@ -108,8 +114,19 @@ def diagnose():
         return {"steps": steps, "udids": [], "paired": False, "next": steps[-1]["title"]}
 
     # --- 3. is a device visible? -------------------------------------------------------------
-    rc, out = _run(["idevice_id", "-l"])
-    udids = [l.strip() for l in (out or "").splitlines() if re.match(r"^[0-9A-Fa-f-]{8,}$", l.strip())]
+    # BOTH transports. `idevice_id -l` includes USB only (tools/idevice_id.c: case 'l' sets
+    # include_usb), and `-n` includes network only. On a cable-free server the phone is reachable
+    # solely over netmuxd, so checking USB alone reported "no device" for a perfectly paired phone
+    # and made /install demand a cable it does not need. Same flag trap as the reachability check.
+    def _udids(args, env=None):
+        _rc, o = _run(["idevice_id"] + args, env=env)
+        return [l.strip() for l in (o or "").splitlines()
+                if re.match(r"^[0-9A-Fa-f-]{8,}$", l.strip())]
+
+    usb_udids = _udids(["-l"])
+    net_udids = [u for u in _udids(["-n"], env=_WIRELESS_ENV) if u not in usb_udids]
+    udids = usb_udids + net_udids
+    wireless_only = bool(net_udids) and not usb_udids
 
     if not udids:
         steps.append({
@@ -126,11 +143,21 @@ def diagnose():
         })
         return {"steps": steps, "udids": [], "paired": False, "next": steps[-1]["title"]}
 
-    steps.append({"title": "iPhone detected", "state": STEP_OK,
-                  "detail": "UDID %s" % udids[0], "action": "", "note": ""})
+    steps.append({
+        "title": "iPhone detected over Wi-Fi" if wireless_only else "iPhone detected",
+        "state": STEP_OK,
+        "detail": "UDID %s%s" % (udids[0], " (via netmuxd, no cable attached)" if wireless_only else ""),
+        "action": "",
+        "note": ("Already paired and reachable wirelessly -- no cable is needed. The USB step "
+                 "above is only for a phone that has never been paired with this server."
+                 if wireless_only else ""),
+    })
 
     # --- 4. pairing ---------------------------------------------------------------------------
-    rc, out = _run(["idevicepair", "validate"])
+    # -n for a network device: idevicepair.c:372 selects IDEVICE_LOOKUP_USBMUX unless it is
+    # passed, so validating a wireless device without it checks a USB device that is not there.
+    rc, out = (_run(["idevicepair", "-n", "validate"], env=_WIRELESS_ENV) if wireless_only
+               else _run(["idevicepair", "validate"]))
     low = (out or "").lower()
 
     if rc == 0:
