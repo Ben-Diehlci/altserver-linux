@@ -258,6 +258,54 @@ Dockerfile against the `paths:` filter and fails if something entering the image
 rebuild it. It runs from `build.yml`, not `build_image.yml` — a guard living inside the filtered
 workflow would be skipped by precisely the bug it detects.
 
+### CONFIRMED 2026-09-14: the stale-image bug had a second half -- `libraries/**` was never listed
+
+The `paths:` filter fixed above listed `src/**`, `shims/**`, `makefiles/**`, `Makefile`,
+`upstream_repo` and `web/**` -- but **not `libraries/**`**. `Dockerfile:33` runs
+`make -f ../Makefile`, and `makefiles/main.mak:9` points `LIB_DIR` straight at `libraries/`, so
+the five vendored submodules (libimobiledevice, libusbmuxd, libplist, libimobiledevice-glue,
+ideviceinstaller) plus the plain sources in `libraries/dnssd_loader` are compiled **into the
+`-static` binary**.
+
+So bumping a submodule -- the single most likely reason to touch that tree, and exactly what the
+netmuxd/`libimobiledevice` compatibility work above leads to -- would have changed the shipped
+binary while publishing no new image. Same silent failure as the `web/**` omission, one level
+down, and worse: a stale *binary* cannot be spotted by grepping a file inside the container the
+way a stale `server.py` can.
+
+Found by reading, not by being bitten. Nothing had bumped a submodule since the filter was
+written, which is the only reason this had not already cost a debugging session.
+
+**The check was blind to it, and blind in an instructive way.** `check_workflow_paths.py` cross-
+referenced the Dockerfile's `COPY` lines against the filter -- correct for things *copied* in, but
+the compile inputs were a **hardcoded tuple**, `("src", "shims", "makefiles", "Makefile",
+"upstream_repo")`. That list was written when the filter was, from the same incomplete mental
+model, so it agreed with the bug and printed green. Fourth instance this session of **a check
+sharing its blind spot with the thing it checks** (after the anisette fields, `idevice_id`, and
+`yaml.safe_load`).
+
+The fix is therefore not "add `libraries` to the tuple" -- that just reloads the same gun. The
+check now **derives** the compile inputs from the makefiles: it resolves `$(MAIN_DIR)`,
+`$(LIB_DIR)`, `$(UPSTREAM_DIR)`, `$(SHIM_DIR)` and friends to repo-relative paths and requires the
+filter to cover every top-level directory the build actually reaches into. A newly vendored tree
+is caught the moment a makefile references it, with no list to remember.
+
+Two make details the resolver has to respect, both of which produced wrong answers first:
+
+- **`ROOT_DIR` is per-file.** It is `$(dir $(abspath $(lastword $(MAKEFILE_LIST))))`, so every
+  sub-makefile redefines it to *its own* directory. Treating it as the repo root put
+  `makefiles/AltSign-build/rewrite_altsign_source.py` at the repo root and reported four
+  nonexistent top-level paths.
+- **Commented-out lines still mention variables.** `Makefile:50` is a dead
+  `#libimobiledevice_include := -I$(LIB_DIR)/...`, and citing it as the reason `libraries` is a
+  build input would have sent the next reader to dead code. Comments are blanked, not dropped, so
+  reported line numbers stay real.
+
+Verified in both directions before committing: deleting `- 'libraries/**'` from the filter fails
+the check (exit 1) naming `libraries` and citing `makefiles/main.mak:9`; adding a fresh
+`VENDOR_DIR := $(MAIN_DIR)/vendor` to a makefile fails it naming `vendor`, with the filter
+otherwise complete.
+
 ### CONFIRMED 2026-09-14: one bad JS escape broke every page
 
 The install page did nothing: the form would not submit, no log appeared, the state stayed on its
