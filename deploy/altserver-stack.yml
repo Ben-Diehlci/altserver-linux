@@ -165,7 +165,10 @@ services:
     #
     #     sudo bash deploy/apparmor/install.sh
     #
-    # then change the line below to `- apparmor=altserver-mdns` and redeploy.
+    # then set ALTSERVER_APPARMOR=altserver-mdns in Portainer's stack environment (or your .env)
+    # and redeploy. It is a variable rather than an edit here so that deploying this repo
+    # unchanged still works on a host that has not loaded the profile: a container asking for a
+    # profile the kernel does not have FAILS TO START, which would be a hostile default.
     #
     # The default stays `unconfined` ONLY so that deploying straight from the repo works with no
     # host preparation: a container asking for a profile the host has not loaded FAILS TO START,
@@ -173,7 +176,7 @@ services:
     # namespaces and cgroups still apply either way, so this is still more confined than running
     # AltServer directly on the host -- the actual alternative.
     security_opt:
-      - apparmor=unconfined
+      - apparmor=${ALTSERVER_APPARMOR:-unconfined}
 
     # REQUIRED. The binary installs no SIGTERM handler (its only signal call is
     # signal(SIGPIPE, SIG_IGN)), so as PID 1 the kernel discards docker stop's SIGTERM and every
@@ -293,7 +296,10 @@ services:
     #
     #     sudo bash deploy/apparmor/install.sh
     #
-    # then change the line below to `- apparmor=altserver-mdns` and redeploy.
+    # then set ALTSERVER_APPARMOR=altserver-mdns in Portainer's stack environment (or your .env)
+    # and redeploy. It is a variable rather than an edit here so that deploying this repo
+    # unchanged still works on a host that has not loaded the profile: a container asking for a
+    # profile the kernel does not have FAILS TO START, which would be a hostile default.
     #
     # The default stays `unconfined` ONLY so that deploying straight from the repo works with no
     # host preparation: a container asking for a profile the host has not loaded FAILS TO START,
@@ -301,7 +307,7 @@ services:
     # namespaces and cgroups still apply either way, so this is still more confined than running
     # AltServer directly on the host -- the actual alternative.
     security_opt:
-      - apparmor=unconfined
+      - apparmor=${ALTSERVER_APPARMOR:-unconfined}
 
     # Lets the status page see whether the AltServer daemon is actually running. Containers have
     # separate PID namespaces, so without this a sidecar reports "not running" no matter how
