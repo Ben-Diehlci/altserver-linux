@@ -1084,14 +1084,14 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
 
 ### High severity
 
-- [ ] **A1. BOOTSTRAP.md, the doc README sends new users to, is written for one specific machine and cannot be followed by anyone else**
+- [x] **A1. FIXED 2026-09-15. BOOTSTRAP.md, the doc README sends new users to, is written for one specific machine and cannot be followed by anyone else**
       `BOOTSTRAP.md` -- fix
       README.md:10 advertises it as "first-time setup, start to finish", but it is an operator log
       for one host. BOOTSTRAP.md:7 "Target: Dell OptiPlex 5060 → Proxmox → Ubuntu 24.04 VM
       (`192.168.9.16`, `ens18`)". BOOTSTRAP.md:21 opens Phase 0 with `git push origin bd/revival` —
       a stranger has no push access, and that branch is already merged into `new`.
 
-- [ ] **A2. BOOTSTRAP tells the reader the project's core functions are unproven or broken; README says they are fixed**
+- [x] **A2. FIXED 2026-09-15. BOOTSTRAP tells the reader the project's core functions are unproven or broken; README says they are fixed**
       `BOOTSTRAP.md` -- fix
       Direct contradiction between the two docs a new user reads first. BOOTSTRAP.md:217 (Phase 2
       "Honest confidence" table): "| This produces a successful Apple sign-in | **Low — unproven.**
@@ -1100,7 +1100,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       issuance |" and REVIVAL.md:1102 "**Phase 4 — install: sign-in WORKS.**" BOOTSTRAP.md:296-298
       still frames #131 as an open unknown ("the fix in `0e8090b` did not work, and that is exactly
 
-- [ ] **A3. "No host preparation is needed" is wrong, and the missing host paths are silently created as directories that permanently break mDNS**
+- [x] **A3. FIXED 2026-09-15. "No host preparation is needed" is wrong, and the missing host paths are silently created as directories that permanently break mDNS**
       `README.md` -- fix
       README.md:42-44 "No host preparation is needed — it uses named volumes, and the image bundles
       every runtime dependency", and README.md:104 says the runtime requirements are "Bundled in the
@@ -1109,7 +1109,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       `/var/run/avahi-daemon/socket` with the comment "the actual publishing is done by the HOST's
       avahi-daemon", and the Dockerfile installs avahi-utils but no avahi-daemon (Dockerfile:50-64).
 
-- [ ] **A4. BOOTSTRAP and the shipped pairing page tell users to stop usbmuxd and let netmuxd take /var/run/usbmuxd, contradicting the design the stack actually ships**
+- [x] **A4. FIXED 2026-09-15. BOOTSTRAP and the shipped pairing page tell users to stop usbmuxd and let netmuxd take /var/run/usbmuxd, contradicting the design the stack actually ships**
       `BOOTSTRAP.md` -- fix
       BOOTSTRAP.md:318-320: "**Stop `usbmuxd`, start `netmuxd`** (≥ 0.3). They collide: stock
       usbmuxd never emits ConnectionType `Network`, and netmuxd binds `/var/run/usbmuxd` by
@@ -1127,7 +1127,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       compile inputs explicitly: libimobiledevice/src, libimobiledevice/common, libimobiledevice-
       glue/src, libusbmuxd/src, libusbmuxd/common. ideviceinstaller is not among them.
 
-- [ ] **A6. BOOTSTRAP.md Phase 7 instructs the opposite of the netmuxd configuration the stack actually ships**
+- [x] **A6. FIXED 2026-09-15. BOOTSTRAP.md Phase 7 instructs the opposite of the netmuxd configuration the stack actually ships**
       `BOOTSTRAP.md` -- fix
       BOOTSTRAP.md is reachable -- README.md links it twice as "first-time setup, start to finish"
       -- but three of its phases now describe a deployment that no longer exists, and Phase 7 will
@@ -1153,7 +1153,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       README.md:39) and for a Portainer repository stack with compose path `deploy/altserver-
       stack.yml` is `deploy/` — which contains no Dockerfile. The build fails with "failed to read
 
-- [ ] **A9. BOOTSTRAP's install step still uses the password-on-the-command-line path and cites a TODO that is already done**
+- [x] **A9. FIXED 2026-09-15. BOOTSTRAP's install step still uses the password-on-the-command-line path and cites a TODO that is already done**
       `BOOTSTRAP.md` -- fix
       BOOTSTRAP.md:264 instructs `~/AltServer-x86_64 -u "$UDID" -a "$APPLEID" -p "$APPLEPW"
       ~/AltStore.ipa`, and BOOTSTRAP.md:267-269 says "The password is still visible in `ps` for the
@@ -1162,7 +1162,7 @@ Status key: **OPEN** = not yet addressed. Tick these off in the same commit that
       ALTSERVER_UDID / ALTSERVER_APPLE_ID / ALTSERVER_APPLE_PASSWORD with flag-over-env precedence,
       README.md:92 says "Prefer these", and REVIVAL.md:1367 marks TODO 9 struck through and
 
-- [ ] **A10. BOOTSTRAP describes manual steps the shipped image has automated and never mentions the stack, the web UI, or netmuxd**
+- [x] **A10. FIXED 2026-09-15. BOOTSTRAP describes manual steps the shipped image has automated and never mentions the stack, the web UI, or netmuxd**
       `BOOTSTRAP.md` -- fix
       BOOTSTRAP.md:248 "Get `AltStore.ipa` from <https://altstore.io> onto the VM" and
       BOOTSTRAP.md:256 `ls -la ~/AltStore.ipa` predate the automatic fetch: docker-entrypoint.sh:15

@@ -98,8 +98,10 @@ def diagnose():
             "state": STEP_BLOCKED,
             "detail": "%s does not exist." % sock,
             "action": "sudo systemctl start usbmuxd    # or plug the phone in, which starts it",
-            "note": "If you are running netmuxd for wireless refresh instead, it OWNS this same "
-                    "socket and usbmuxd must be stopped -- the two collide."
+            "note": "Older guidance says to stop usbmuxd because netmuxd takes this same "
+                    "socket. That is NOT true of this stack: netmuxd is given its own "
+                    "--socket-path in a shared volume, so the host usbmuxd keeps the cable "
+                    "and nothing contends. Leave usbmuxd alone."
                     + (" This container needs the socket bind-mounted from the host."
                        if _in_container() else ""),
         })

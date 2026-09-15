@@ -39,8 +39,10 @@ Everything runs as one stack: AltServer, an anisette server, and a setup web UI.
 docker compose -f deploy/altserver-stack.yml up -d
 ```
 
-No host preparation is needed — it uses named volumes, and the image bundles every runtime
-dependency. The AltStore IPA is fetched automatically on start, resolved from AltStore's own
+Named volumes, and the image bundles every runtime dependency — but the host does need
+`avahi-daemon` running and `usbmuxd` present, because the stack bind-mounts their sockets (and
+`/var/lib/lockdown` for the pairing record). [BOOTSTRAP.md](BOOTSTRAP.md) Phase 1 is the one-line
+apt install. The AltStore IPA is fetched automatically on start, resolved from AltStore's own
 catalogue so it is always current.
 
 Then open **`http://<your-host>:8099`**.
