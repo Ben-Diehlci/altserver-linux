@@ -20,8 +20,22 @@ on:
         default: false
   repository_dispatch:
 
-  schedule:
-    - cron: "0 */4 * * *" # min hour day week year
+  # NO schedule. This used to run `cron: "0 */4 * * *"` -- 6 times a day, ~180 runs a month --
+  # watching the upstream_repo submodule, which is rileytestut/AltServer-Windows, NOT this repo's
+  # upstream (NyaMisty/AltServer-Linux). AltServer-Windows has not moved since 071b1dd on
+  # 2022-04-25, so every one of those runs found nothing.
+  #
+  # Removed for a second and better reason than noise. When it DID find a commit it ran
+  # `git submodule update --remote -- upstream_repo` and built all four architectures from that
+  # newer source WITHOUT committing it, so a published artifact could come from code no commit in
+  # this repo describes. The build rewrites those sources textually
+  # (makefiles/rewrite_altserver_source.py), and that rewriter has no match guards at all, so an
+  # upstream move could change what the binary does with nothing failing -- see the TODO in
+  # REVIVAL.md. An unattended job is the worst place for that.
+  #
+  # Nothing is lost: the same check still runs on demand via the `sync_upstream` input above. The
+  # `github.event_name == 'schedule'` conditions in the check and matrix_setup jobs are left in
+  # place, so restoring the cron here is the only edit needed to bring the old behaviour back.
 
 
 env:

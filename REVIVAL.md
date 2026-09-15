@@ -1369,6 +1369,36 @@ current certificates expire.
    env var, or reading from stdin when `-p` is absent, would fix it. Small, and it matters more
    once this runs unattended, where the password has to live somewhere anyway.
 
+### CONFIRMED 2026-09-15: the 4-hourly scheduled build watched a repo that has not moved since 2022
+
+`build.yml` carried `schedule: cron: "0 */4 * * *"`, inherited from NyaMisty's setup. What it
+actually watched was easy to misread: **`upstream_repo`, which is
+`rileytestut/AltServer-Windows`** -- not this repo's upstream, `NyaMisty/AltServer-Linux`. The pin
+is `071b1dd`, 2022-04-25. Every run for years found nothing, 6 times a day.
+
+The noise was not the real problem. On a hit the build job ran
+
+```yaml
+- name: Do Submodule Update
+  if: ${{ needs.check.outputs.updated == '1' }}
+  run: git submodule update --remote -- upstream_repo
+```
+
+and then built **all four architectures from that newer source without committing it**, so a
+published artifact could come from code no commit in this repo describes. Given the build rewrites
+those sources textually and `rewrite_altserver_source.py` has **no match guards at all**, an
+upstream move could change the binary's behaviour with nothing failing anywhere. Unattended is the
+worst possible place for that combination.
+
+Removed the `schedule:` trigger. The same check still runs on demand through the existing
+`sync_upstream` workflow_dispatch input, and the `github.event_name == 'schedule'` conditions in
+the `check` and `matrix_setup` jobs were deliberately left in place, so restoring the cron line is
+the only edit needed to bring the old behaviour back.
+
+This does not close the underlying hazard -- it removes the unattended trigger for it. The real
+fix is giving `rewrite_altserver_source.py` the same fail-loudly guards the other three rewriters
+have, which remains on the TODO list above.
+
 ### Explicitly not doing
 
 - **PR #98 (CMake rewrite).** Author wrote "doesn't 100% work" in 2023 and never returned; keyed
