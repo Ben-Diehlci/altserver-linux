@@ -1,11 +1,51 @@
-docker build --build-arg IMAGE=arm32v7/alpine:3.15 -t ghcr.io/nyamisty/altserver_builder_alpine_armv7 .
-docker push ghcr.io/nyamisty/altserver_builder_alpine_armv7
+#!/usr/bin/env bash
+#
+# Builds the four toolchain images the main build compiles inside, and pushes them to GHCR.
+#
+# NAMESPACE. This used to hardcode ghcr.io/nyamisty, so in any fork every `docker push` was denied
+# -- a fork's GITHUB_TOKEN cannot write to another account's packages -- and the workflow failed
+# after spending several minutes building four architectures under QEMU. It now derives the
+# namespace from whoever owns the repository, which GitHub Actions supplies as
+# GITHUB_REPOSITORY_OWNER, so it works in a fork without editing. Override with GHCR_NAMESPACE to
+# push somewhere else. GHCR requires lowercase, so the value is lowercased.
+#
+#   bash build_docker.sh                     # in CI: pushes to the repo owner's namespace
+#   GHCR_NAMESPACE=someone bash build_docker.sh
+#
+# NOTE: this only changes where images are PUBLISHED. Nothing consumes them from here yet --
+# .github/workflows/build.yml, build_image.yml, docker/Dockerfile, deploy/altserver-stack.yml and
+# README.md all still pull ghcr.io/nyamisty/altserver_builder_alpine_*, which are public, alive,
+# and what every build currently uses. Repointing those is a separate, deliberate step, and doing
+# it before this script has successfully published your own images would break the build outright.
 
-docker build --build-arg IMAGE=arm64v8/alpine:3.15 -t ghcr.io/nyamisty/altserver_builder_alpine_aarch64 .
-docker push ghcr.io/nyamisty/altserver_builder_alpine_aarch64
+set -euo pipefail
 
-docker build --build-arg IMAGE=amd64/alpine:3.15 -t ghcr.io/nyamisty/altserver_builder_alpine_amd64 .
-docker push ghcr.io/nyamisty/altserver_builder_alpine_amd64
+NS="${GHCR_NAMESPACE:-${GITHUB_REPOSITORY_OWNER:-}}"
+if [ -z "$NS" ]; then
+    echo "No namespace: set GHCR_NAMESPACE, or run where GITHUB_REPOSITORY_OWNER is set." >&2
+    exit 1
+fi
+NS="$(printf '%s' "$NS" | tr '[:upper:]' '[:lower:]')"
 
-docker build --build-arg IMAGE=i386/alpine:3.15 -t ghcr.io/nyamisty/altserver_builder_alpine_i386 .
-docker push ghcr.io/nyamisty/altserver_builder_alpine_i386
+echo "Publishing toolchain images to ghcr.io/${NS}/"
+
+build_and_push() {
+    local base="$1" tag="$2"
+    local image="ghcr.io/${NS}/altserver_builder_alpine_${tag}"
+    echo "==> ${image}  (from ${base})"
+    docker build --build-arg "IMAGE=${base}" -t "${image}" .
+    docker push "${image}"
+}
+
+build_and_push arm32v7/alpine:3.15 armv7
+build_and_push arm64v8/alpine:3.15 aarch64
+build_and_push amd64/alpine:3.15   amd64
+build_and_push i386/alpine:3.15    i386
+
+echo
+echo "Done. To actually BUILD against these instead of ghcr.io/nyamisty, repoint:"
+echo "  .github/workflows/build.yml       (the four matrix entries)"
+echo "  .github/workflows/build_image.yml (the BUILDER build-arg)"
+echo "  docker/Dockerfile                 (ARG BUILDER default)"
+echo "  deploy/altserver-stack.yml        (the commented build: BUILDER)"
+echo "  README.md                         (the docker run example)"

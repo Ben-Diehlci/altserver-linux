@@ -1078,6 +1078,24 @@ reaches the BROWSER; it does not touch what reaches `docker logs`.
 publishes the device UDID and anisette Device-Id to anyone on the LAN. Bind `127.0.0.1` and use an
 SSH tunnel -- already the documented recommendation for the password form, and it applies here too.
 
+### CONFIRMED 2026-09-15: the buildenv workflow could never have worked in a fork
+
+`buildenv/build_docker.sh` hardcoded `ghcr.io/nyamisty/...` as the push target, so in this fork
+every `docker push` was denied -- a fork's `GITHUB_TOKEN` cannot write to another account's
+packages. The job spent several minutes building four architectures under QEMU and then failed at
+the first push, every time, for anyone who ran it.
+
+It now derives the namespace from `GITHUB_REPOSITORY_OWNER`, which Actions supplies, overridable
+with `GHCR_NAMESPACE`, and lowercased because GHCR requires that (`Ben-Diehlci` -> `ben-diehlci`).
+It also gained `set -euo pipefail`; without it a failed build fell through to the push, and a
+failed push fell through to the next architecture.
+
+**This only changes where images are PUBLISHED.** All six consumers -- both workflows,
+`docker/Dockerfile`, the commented build block in the stack, and README -- still pull
+`ghcr.io/nyamisty/altserver_builder_alpine_*`, which are public, alive, and what every build
+currently uses. Repointing them is a separate deliberate step, and doing it before this script has
+successfully published a replacement set would break the build outright.
+
 ## Repository audit, 2026-09-15
 
 Run after `bd/revival` merged into `new`, to answer two questions: is every tracked file
