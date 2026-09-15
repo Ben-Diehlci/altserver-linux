@@ -46,10 +46,26 @@ echo "Loading it into the kernel"
 apparmor_parser -r -W "$DEST"
 
 # Confirm rather than assume: a profile can parse, install, and still not be loaded.
-if aa-status --profiled 2>/dev/null | grep -qx "$PROFILE_NAME"; then
+#
+# NOT `aa-status --profiled`. That flag prints the NUMBER of loaded profiles, not their names, so
+# grepping it for a profile name can never match -- it reported failure for a profile that had
+# loaded perfectly well. The kernel's own list is the authority; aa-status output is the fallback
+# for a host where securityfs is mounted somewhere unusual.
+profile_loaded() {
+    if [ -r /sys/kernel/security/apparmor/profiles ]; then
+        awk '{print $1}' /sys/kernel/security/apparmor/profiles | grep -qx "$PROFILE_NAME" && return 0
+    fi
+    aa-status 2>/dev/null | grep -qE "^[[:space:]]*${PROFILE_NAME}\$" && return 0
+    return 1
+}
+
+if profile_loaded; then
     echo "OK: ${PROFILE_NAME} is loaded."
 else
-    echo "WARNING: ${PROFILE_NAME} did not appear in aa-status. Check: sudo aa-status" >&2
+    echo "WARNING: ${PROFILE_NAME} is not in the kernel's profile list." >&2
+    echo "Check with: sudo aa-status | grep ${PROFILE_NAME}" >&2
+    echo "Do NOT set ALTSERVER_APPARMOR until this succeeds -- a container that asks for an" >&2
+    echo "unloaded profile fails to start." >&2
     exit 1
 fi
 
