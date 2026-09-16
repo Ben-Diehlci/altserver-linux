@@ -1,19 +1,55 @@
 # AltServer-Linux
 
-AltServer for AltStore, but on-device.
+**Keep sideloaded iOS apps working, from a Linux box, with no Mac or PC involved.**
 
-> **This is a fork** of [NyaMisty/AltServer-Linux](https://github.com/NyaMisty/AltServer-Linux),
-> whose last real code commit predates 2025 and whose CI had been failing on every run. The goal
-> here is **running unattended on a Linux home server**, so sideloaded apps keep refreshing on the
-> 7-day cycle without a Mac or PC being powered on.
->
-> - **[Setup](#setup)** — first-time install, start to finish
-> - **[REVIVAL.md](docs/REVIVAL.md)** — what changed, why, and what is still broken
-> - **[deploy/](deploy/)** — Portainer / compose stacks
+## What this is
+
+Apps installed outside the App Store — through [AltStore](https://altstore.io) — are signed with
+a free Apple developer certificate that **expires after 7 days**. Something has to re-sign them
+before then, or they stop opening. Normally that something is AltServer on a Mac or Windows PC,
+which has to be awake and on the same Wi-Fi when the deadline comes round.
+
+This runs that job on a Linux machine instead — a home server, a NAS, a Raspberry Pi, a VM. Set it
+up once and your sideloaded apps keep refreshing by themselves, over Wi-Fi, with nothing else
+switched on.
+
+### What you need
+
+| | |
+|---|---|
+| A Linux host with Docker | Written against Ubuntu 24.04; nothing is Ubuntu-specific beyond the `apt` lines |
+| An iPhone or iPad | On the same network as the host |
+| A USB cable | **Once**, for the first pairing. Never needed again after that |
+| An Apple ID | Ideally a secondary one — see the warning in [Setup](#setup) |
+| ~30 minutes | Most of it waiting on downloads |
+
+A free Apple ID caps you at **3 sideloaded apps**, 10 new app IDs per week, and the 7-day
+certificate. A paid developer account raises those limits but is not required.
+
+### What it will not do
+
+- **AltJIT on iOS 17+.** Needs a personalised DDI, TSS signing and a RemoteXPC tunnel. Use
+  [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) instead.
+- **Pair without a cable.** Wireless pairing is an Apple-TV-only feature and is not available here.
+- **Refresh while your phone is off the network.** It needs to reach the device.
+
+### Where to go next
+
+| You want to | Go to |
+|---|---|
+| Install it | **[Setup](#setup)** — seven steps, start to finish |
+| Understand the design | [How the build works](#how-the-build-works) and [docs/REVIVAL.md](docs/REVIVAL.md) |
+| Run the binary without Docker | [Reference](#reference) |
+| Deploy with Portainer / compose | [deploy/](deploy/) |
 
 ---
 
-## Status
+## Fork status
+
+> **This is a fork** of [NyaMisty/AltServer-Linux](https://github.com/NyaMisty/AltServer-Linux),
+> whose last real code commit predates 2025 and whose CI had been failing on every run. The table
+> below is what this fork changed — useful if you arrived from upstream or an issue thread, and
+> safe to skip if you just want it running.
 
 | | |
 |---|---|
@@ -24,7 +60,6 @@ AltServer for AltStore, but on-device.
 | corecrypto build (#111) | **Fixed.** The buildenv image is rebuildable from source again |
 | iOS 26 launch crash (#131) | Fixed in code; AltStore **installs and launches** |
 | Wireless refresh | **Working.** The sockaddr-layout bug that broke every Wi-Fi connection is fixed and confirmed on a real device: profiles refresh over Wi-Fi with no cable |
-| AltJIT on iOS 17+ | **Not supported.** Needs personalised DDI, TSS signing and a RemoteXPC tunnel. Use [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) |
 
 ---
 
@@ -49,7 +84,7 @@ sudo apt install -y avahi-daemon avahi-utils usbmuxd libimobiledevice-utils
 | Host package | Why the stack needs it |
 |---|---|
 | `avahi-daemon` **running** | The containers bind-mount its socket and the system D-Bus socket; it does the actual mDNS publishing |
-| `usbmuxd` | Owns the USB cable for Phase 2's one-time pairing. The stack bind-mounts `/var/run/usbmuxd` |
+| `usbmuxd` | Owns the USB cable for step 2's one-time pairing. The stack bind-mounts `/var/run/usbmuxd` |
 | `libimobiledevice-utils` | `idevice_id` / `idevicepair`, used to confirm the pairing worked |
 
 Do **not** `systemctl enable usbmuxd` on Ubuntu — it is udev-activated and has no `[Install]`
@@ -97,7 +132,7 @@ transport, and a web UI that drives the install.
 docker compose -f deploy/altserver-stack.yml up -d
 ```
 
-**No host preparation beyond Phase 1.** It uses named volumes, the image is public, and the
+**No host preparation beyond step 1.** It uses named volumes, the image is public, and the
 AltStore IPA is fetched automatically on start, resolved from AltStore's own catalogue so it is
 always current.
 
@@ -161,7 +196,7 @@ contain the full account record and bearer tokens.
 | `Could not reach the anisette server at …` | Container not running, or wrong port |
 | `… returned HTTP 502/404. Response body: …` | Anisette up but unhealthy — the body is quoted for you |
 | `… did not return a JSON object` | Wrong endpoint; you are getting HTML |
-| `… no "X-Apple-I-MD-M" field` | Protocol mismatch — re-check Phase 3 |
+| `… no "X-Apple-I-MD-M" field` | Protocol mismatch — re-check step 3 |
 | `-36607` / "Unable to sign you in" | Anisette identity or clock. Check NTP **on the anisette host** — its timestamp is forwarded to Apple verbatim |
 | `AltServer could not find the device` | Pairing or usbmuxd, **not** mDNS at this stage |
 | `Finished!` | **Not proof of success** — it prints even on failure. Read the lines above it |
@@ -191,7 +226,7 @@ by default, but this stack overrides that. AltServer is pointed at netmuxd with
 `USBMUXD_SOCKET_ADDRESS` (note the spelling — the widely-copied `USBMUXD_SOCKET_ADRESS`, one D, is
 silently ignored).
 
-Requirements on the phone side, both normally already true after Phase 2:
+Requirements on the phone side, both normally already true after step 2:
 
 | Needs to be true | How to check from the server |
 |---|---|
@@ -221,9 +256,10 @@ Both tarballs contain identifying material and are already in `.gitignore`.
 
 ---
 
-### The web UI
+## The web UI
 
-Reachable at `http://<your-host>:8099` once the stack is up.
+Reachable at `http://<your-host>:8099` once the stack is up. Everything in Setup can be driven
+from here; the command lines above are for when you want to see what it is doing.
 
 | Page | What it does |
 |---|---|
