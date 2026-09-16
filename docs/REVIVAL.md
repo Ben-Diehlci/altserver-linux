@@ -347,7 +347,7 @@ Everything else in the wireless path was already healthy:
 | Layer | Measured |
 |---|---|
 | Subnet | phone `192.168.8.45`, server `192.168.9.16/22` -- same subnet, ICMP fine |
-| Phone advertising | `_apple-mobdev2._tcp` -> `iPhone.local`, TXT `authTag` + `identifier` |
+| Phone advertising | `_apple-mobdev2._tcp` -> `<device-name>.local`, TXT `authTag` + `identifier` |
 | **lockdownd over Wi-Fi** | **port 62078 OPEN** |
 | AltServer discoverable | `_altserver._tcp` on `192.168.9.16:37271` |
 
