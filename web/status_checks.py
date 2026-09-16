@@ -20,6 +20,7 @@ checks exist to turn that into something visible.
 """
 
 import calendar
+import concurrent.futures
 import json
 import os
 import shutil
@@ -331,15 +332,40 @@ def check_altserver_running():
 
 
 def run_all(anisette_url=None):
+    """Run every check, in parallel apart from the one real dependency.
+
+    These were serial, which made the page as slow as the SUM of its checks. Two of them shell out
+    to avahi-browse with a 15s timeout, so when an AppArmor rule started denying avahi's D-Bus
+    signals the dashboard took over half a minute to render anything -- the checks were reporting
+    a problem correctly and the page was unusable while they did it.
+
+    They are subprocess and HTTP calls, so threads are the right tool: the page is now as slow as
+    its SLOWEST check, not their total. check_clock is the one genuine dependency, needing the
+    timestamp check_anisette collected, so anisette runs first and the rest run together.
+
+    A check that raises must not take the dashboard with it -- that is what the whole page exists
+    to avoid -- so each result is collected defensively.
+    """
     anisette = check_anisette(anisette_url)
-    checks = [
-        anisette,
-        check_clock(anisette.get("anisette_time")),
-        check_device(),
-        check_phone_advertisement(),
-        check_advertisement(),
-        check_altserver_running(),
-    ]
+
+    def _clock():
+        return check_clock(anisette.get("anisette_time"))
+
+    rest = [_clock, check_device, check_phone_advertisement,
+            check_advertisement, check_altserver_running]
+
+    results = [None] * len(rest)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(rest)) as pool:
+        futures = {pool.submit(fn): i for i, fn in enumerate(rest)}
+        for fut in concurrent.futures.as_completed(futures):
+            i = futures[fut]
+            try:
+                results[i] = fut.result()
+            except Exception as exc:  # a broken check must not blank the page
+                results[i] = _result("Check #%d" % (i + 1), UNKNOWN,
+                                     "This check raised an exception", str(exc))
+
+    checks = [anisette] + results
     states = [c["state"] for c in checks]
     if FAIL in states:
         overall = FAIL
