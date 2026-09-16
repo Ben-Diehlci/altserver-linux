@@ -1101,6 +1101,44 @@ the four architectures build under QEMU), all four images published public, and 
 the new aarch64 image produced a working binary containing the sockaddr patch. The consumers were
 repointed after that, not before.
 
+### CONFIRMED 2026-09-15: the AppArmor profile blocked D-Bus SIGNALS, so browsing broke while publishing worked
+
+After switching from `apparmor=unconfined` to `altserver-mdns`, both mDNS rows on the status page
+started reporting `avahi-browse timed out after 15s`. Refresh itself was unaffected and the server
+stayed discoverable from another machine -- a monitoring failure, not a functional one, which is
+exactly the combination that makes a status page dangerous rather than merely wrong.
+
+`dmesg` named the cause precisely:
+
+```
+apparmor="DENIED" operation="dbus_signal" bus="system"
+path="/Client417/ServiceBrowser1" interface="org.freedesktop.Avahi.ServiceBrowser"
+member="ItemNew" name=":1.3" mask="receive" label="altserver-mdns"
+```
+
+**A D-Bus signal carries the sender's UNIQUE connection name, not its well-known one.** The profile
+allowed `peer=(name=org.freedesktop.Avahi)`, which matches method calls and their replies -- so
+publishing kept working -- but never matches a signal from `:1.3`. `avahi-browse` subscribed,
+received neither `ItemNew` nor `CacheExhausted`, and sat there until its own timeout.
+
+Fixed by matching on the interface, which is stable regardless of which unique name avahi holds:
+
+```
+dbus receive bus=system interface=org.freedesktop.Avahi*,
+```
+
+**The ptrace denials in the same dmesg are NOT a bug and were deliberately left alone.**
+`altserver-web` runs with `pid: host` so the status page's `pgrep -af AltServer` walks every
+process on the host. AltServer is under this profile and therefore readable; the denials are for
+unrelated host and `docker-default` processes it passes on the way. Widening to `peer=unconfined`
+would let the web container read other services' `/proc/PID/environ`, which is where their secrets
+live. Denials there are the profile working.
+
+Worth noting the shape: the narrow profile was tested against publishing, which is what it was
+written for, and shipped without anyone browsing from inside the container. The check that would
+have caught it -- `avahi-browse` from the container -- is the one the status page runs, and it was
+reporting UNKNOWN rather than FAIL, which reads as "not applicable" rather than "broken".
+
 ## Repository audit, 2026-09-15
 
 Run after `bd/revival` merged into `new`, to answer two questions: is every tracked file

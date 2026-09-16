@@ -56,6 +56,20 @@ profile altserver-mdns flags=(attach_disconnected,mediate_deleted) {
   dbus receive
        bus=system
        peer=(name=org.freedesktop.DBus),
+
+  # Signals, which is a separate case from the rule above and was missing. A D-Bus SIGNAL carries
+  # the sender's UNIQUE connection name, not its well-known one, so `peer=(name=org.freedesktop.Avahi)`
+  # matches avahi's method-call replies but never its signals:
+  #
+  #   apparmor="DENIED" operation="dbus_signal" interface="org.freedesktop.Avahi.ServiceBrowser"
+  #   member="ItemNew" name=":1.3" mask="receive" label="altserver-mdns"
+  #
+  # Publishing therefore kept working while BROWSING silently returned nothing -- avahi-browse
+  # subscribed, received no ItemNew or CacheExhausted, and sat until its timeout. Matched on the
+  # interface instead, which is stable regardless of which unique name avahi happens to hold.
+  dbus receive
+       bus=system
+       interface=org.freedesktop.Avahi*,
   # -------------------------------------------------------------------------------------------
 
   # Everything below is docker-default, unchanged.
@@ -76,5 +90,10 @@ profile altserver-mdns flags=(attach_disconnected,mediate_deleted) {
   deny /sys/firmware/** rwklx,
   deny /sys/kernel/security/** rwklx,
 
+  # Deliberately NOT widened to docker-default or unconfined. altserver-web runs with pid: host so
+  # the status page's `pgrep -af AltServer` walks every process on the box; AltServer itself is
+  # under this profile and so is readable, and the denials logged for everything else are the
+  # profile doing its job. Allowing ptrace read of unconfined peers would let this container read
+  # other services' /proc/PID/environ, which is where their secrets live. Expect denials here.
   ptrace (trace,read,tracedby,readby) peer=altserver-mdns,
 }
