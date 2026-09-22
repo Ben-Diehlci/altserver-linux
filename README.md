@@ -58,16 +58,16 @@ certificate. A paid developer account raises those limits but is not required.
 | Apple sign-in | **Working**, including 2FA, team lookup, device registration and certificate issuance |
 | Apple's 2026 GSA client-info block | **Fixed** and confirmed in both directions against live Apple infrastructure |
 | GrandSlam `429` on connection reuse | **Fixed**; proven with a zero-credential probe |
-| corecrypto build (#111) | **Fixed.** The buildenv image is rebuildable from source again |
-| iOS 26 launch crash (#131) | Fixed in code; AltStore **installs and launches** |
+| corecrypto build ([#111](https://github.com/NyaMisty/AltServer-Linux/issues/111)) | **Fixed.** The buildenv image is rebuildable from source again |
+| iOS 26 launch crash ([#131](https://github.com/NyaMisty/AltServer-Linux/issues/131)) | Fixed in code; AltStore **installs and launches** |
 | Wireless refresh | **Working.** The sockaddr-layout bug that broke every Wi-Fi connection is fixed and confirmed on a real device: profiles refresh over Wi-Fi with no cable |
 
 ---
 
 ## Setup
 
-> **Use a secondary Apple ID if you have one.** Issue #88 documents Apple IDs being *locked* after
-> anisette trouble. An app-specific password will **not** work — sideloading needs the real
+> **Use a secondary Apple ID if you have one.** Issue [#88](https://github.com/NyaMisty/AltServer-Linux/issues/88) documents Apple IDs being *locked* after
+> trouble with the machine-identity server this relies on (anisette — explained in step 3). An app-specific password will **not** work — sideloading needs the real
 > password plus a 2FA code. Free accounts cap at 3 sideloaded apps, 10 app IDs/week, 7-day certs.
 
 > **Never run a second signing agent against the same Apple ID** — a Mac or Windows AltServer,
@@ -126,6 +126,13 @@ sudo tar czf ~/lockdown-backup.tgz /var/lib/lockdown/
 Everything else runs as one stack: AltServer, an anisette server, netmuxd for the wireless
 transport, and a web UI that drives the install.
 
+> **Anisette**, since it comes up constantly below: Apple will not accept a sign-in unless the
+> request carries proof that it came from a real, consistent machine — a set of `X-Apple-*`
+> headers derived from a provisioning blob Apple issues on first contact. An anisette server
+> generates those. It is why sign-in can fail with a clock error, and why that identity is worth
+> backing up: lose it and Apple sees a brand-new machine, which means another 2FA prompt and,
+> if it happens repeatedly, the account lockouts issue [#88](https://github.com/NyaMisty/AltServer-Linux/issues/88) describes.
+
 **Portainer → Stacks → Add stack → Repository**, pointing at this repo with compose path
 `deploy/altserver-stack.yml`. Or with plain compose:
 
@@ -136,6 +143,11 @@ docker compose -f deploy/altserver-stack.yml up -d
 **No host preparation beyond step 1.** It uses named volumes, the image is public, and the
 AltStore IPA is fetched automatically on start, resolved from AltStore's own catalogue so it is
 always current.
+
+> **On a Raspberry Pi or anything not x86_64, stop here and read
+> [Deploying on your platform](#deploying-on-your-platform) first.** The published image is
+> `linux/amd64`, so the pull above fails on other architectures. It is one extra command, not a
+> different procedure — then you come straight back to this step.
 
 Then open **`http://<your-host>:8099`**.
 
@@ -232,14 +244,14 @@ contain the full account record and bearer tokens.
 1. AltStore appears on the home screen.
 2. **Settings → General → VPN & Device Management** → trust the developer certificate.
 3. **Open AltStore.** This is the real test — an app that installs but will not launch is the
-   failure mode issue #131 described, and that is fixed in this fork.
+   failure mode issue [#131](https://github.com/NyaMisty/AltServer-Linux/issues/131) described, and that is fixed in this fork.
 
 ### 6. Wireless refresh
 
 **Already running.** netmuxd is part of the stack; there is nothing to install and nothing to
 switch over. Confirmed working on iOS 26: profiles refresh over Wi-Fi with no cable attached.
 
-This deliberately does **not** follow the advice in issue #77, and you should not apply that advice
+This deliberately does **not** follow the advice in issue [#77](https://github.com/NyaMisty/AltServer-Linux/issues/77), and you should not apply that advice
 here. netmuxd runs on its **own socket path** in a shared volume:
 
 ```yaml
@@ -298,12 +310,12 @@ from here; the command lines above are for when you want to see what it is doing
 | `/install` | Apple ID sign-in with 2FA entry in the browser |
 
 The status page also carries a **live log view**. Start it, trigger a refresh from AltStore,
-and watch AltServer's own output -- which is the only thing that can actually confirm a
+and watch AltServer's own output — which is the only thing that can actually confirm a
 refresh worked, since `idevice_id` and the wireless status row both use Debian's
 libimobiledevice rather than the vendored copy AltServer links.
 
 It reads a file on the volume the two containers share, written by the same redaction
-filter that protects `docker logs` -- so the web UI needs neither the Docker socket (which
+filter that protects `docker logs` — so the web UI needs neither the Docker socket (which
 would be root-on-host for a service that takes an Apple ID password over plain HTTP) nor a
 host bind mount, and what it shows is already redacted. Polling runs only while watching is
 on, and stops itself after five minutes so a forgotten tab does not poll forever.
