@@ -367,9 +367,52 @@ to end up with a server that runs, reports nothing wrong, and is invisible to yo
   or other arm64 host cannot pull it and must build the image locally:
   `docker build -f docker/Dockerfile -t altserver .` (uncomment the `build:` block in
   [`deploy/altserver-stack.yml`](deploy/altserver-stack.yml) to have compose do it)
-- Static binaries: GitHub Actions artifacts. Branch pushes build **amd64** only; tags build all
-  four architectures. **`chmod +x` after downloading** — artifact upload does not preserve the
-  executable bit
+- Static binaries: GitHub Actions artifacts. **`chmod +x` after downloading** — artifact upload
+  does not preserve the executable bit
+
+### Building for other architectures
+
+An ordinary push builds **amd64 only**, because the other three run under QEMU emulation on the
+runner and take several times longer. Paying that on every commit is latency for no benefit, but
+dropping them entirely would make this useless on a Raspberry Pi — which is much of the point.
+
+Four are supported:
+
+| Matrix name | Binary is named | Typical host |
+|---|---|---|
+| `amd64` | `AltServer-x86_64` | most servers, NAS boxes, VMs |
+| `aarch64` | `AltServer-aarch64` | Raspberry Pi 4/5 64-bit, Apple silicon VMs |
+| `armv7` | `AltServer-armv7` | older 32-bit Pi |
+| `i386` | `AltServer-i386` | legacy 32-bit x86 |
+
+Note the naming mismatch: the **artifact** is named for the matrix label (`AltServer-amd64`) while
+the **binary inside it** is named for the gcc triple (`AltServer-x86_64`). Only amd64 differs.
+
+Three ways to get the full set:
+
+1. **Actions → Build AltServer → Run workflow**, tick **"Build every architecture, not just
+   amd64"**. Nothing is published; the binaries appear as artifacts on that run. Best for a one-off.
+
+2. **Push a tag.** Builds all four *and* publishes them as a GitHub Release, which is what you want
+   if others will download them:
+
+   ```bash
+   git tag v1.0.0 && git push origin v1.0.0
+   ```
+
+3. **Build locally** for one architecture, using the matching toolchain image:
+
+   ```bash
+   docker run --rm -v "$PWD":/workdir -w /workdir \
+     ghcr.io/<owner>/altserver_builder_alpine_aarch64 \
+     bash -c 'mkdir -p build; cd build; make -f ../Makefile -j"$(nproc)"'
+   ```
+
+   Substitute `_amd64`, `_armv7` or `_i386` for a different target. On a host of a different
+   architecture this runs under emulation and is slow, but it works.
+
+The **container image** is a separate matter: `build_image.yml` publishes `linux/amd64` only. An
+arm64 host builds it locally — see the note above.
 
 ---
 
