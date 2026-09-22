@@ -39,8 +39,9 @@ certificate. A paid developer account raises those limits but is not required.
 |---|---|
 | Install it | **[Setup](#setup)** — seven steps, start to finish |
 | Understand the design | [How the build works](#how-the-build-works) and [docs/REVIVAL.md](docs/REVIVAL.md) |
+| Deploy on a Pi, or any non-amd64 host | [Deploying on your platform](#deploying-on-your-platform) |
 | Run the binary without Docker | [Reference](#reference) |
-| Deploy with Portainer / compose | [deploy/](deploy/) |
+| Fork it and publish your own builds | [If you fork it](#if-you-fork-it) |
 
 ---
 
@@ -364,102 +365,48 @@ to end up with a server that runs, reports nothing wrong, and is invisible to yo
 
 ---
 
-## Download
+## Deploying on your platform
 
-- Container image: `ghcr.io/<owner>/altserver-linux:latest`, built by
-  [`build_image.yml`](.github/workflows/build_image.yml). **`linux/amd64` only** — a Raspberry Pi
-  or other arm64 host cannot pull it and must build the image locally:
-  `docker build -f docker/Dockerfile -t altserver .` (uncomment the `build:` block in
-  [`deploy/altserver-stack.yml`](deploy/altserver-stack.yml) to have compose do it)
-- Static binaries: GitHub Actions artifacts. **`chmod +x` after downloading** — artifact upload
-  does not preserve the executable bit
+Two questions decide everything: **what architecture is your host**, and **are you forking**.
 
-### Building for other architectures
+### Which platforms work
 
-An ordinary push builds **amd64 only**, because the other three run under QEMU emulation on the
-runner and take several times longer. Paying that on every commit is latency for no benefit, but
-dropping them entirely would make this useless on a Raspberry Pi — which is much of the point.
+| Host | Container stack | Static binary | Wireless refresh |
+|---|---|---|---|
+| **amd64** (x86_64) — most servers, NAS, VMs | pull the published image | yes | yes |
+| **arm64** (aarch64) — Raspberry Pi 4/5, Apple silicon VMs | build locally, one command | yes | yes |
+| **armv7** — older 32-bit Pi | no | yes | **no** — see below |
+| **i386** — legacy 32-bit x86 | no | yes | **no** — see below |
 
-Four are supported:
+The limit on the bottom two is not this project: **netmuxd publishes releases only for x86_64 and
+aarch64**, and netmuxd is what makes refresh work without a cable. The Dockerfile refuses to build
+for those architectures rather than producing an image that looks fine and cannot reach your phone:
 
-| Matrix name | Binary is named | Typical host |
-|---|---|---|
-| `amd64` | `AltServer-x86_64` | most servers, NAS boxes, VMs |
-| `aarch64` | `AltServer-aarch64` | Raspberry Pi 4/5 64-bit, Apple silicon VMs |
-| `armv7` | `AltServer-armv7` | older 32-bit Pi |
-| `i386` | `AltServer-i386` | legacy 32-bit x86 |
+```
+netmuxd publishes no build for TARGETARCH=arm
+```
 
-Note the naming mismatch: the **artifact** is named for the matrix label (`AltServer-amd64`) while
-the **binary inside it** is named for the gcc triple (`AltServer-x86_64`). Only amd64 differs.
+On armv7 or i386 you can still run the static binary and install over USB, and wireless refresh
+becomes possible only if you build netmuxd from source (it is Rust) for that target.
 
-Three ways to get the full set:
+---
 
-1. **Actions → Build AltServer → Run workflow**, tick **"Build every architecture, not just
-   amd64"**. Nothing is published; the binaries appear as artifacts on that run. Best for a one-off.
+### Path A — amd64, not forking
 
-2. **Push a tag.** Builds all four *and* publishes them as a GitHub Release, which is what you want
-   if others will download them. Any tag name triggers it — the workflow matches `refs/tags/*` —
-   and the release takes the tag's name, so follow the existing `vMAJOR.MINOR.PATCH` convention:
+Nothing to change. Follow [Setup](#setup). The stack pulls
+`ghcr.io/ben-diehlci/altserver-linux:latest`, which is public.
 
-   ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
-   ```
+### Path B — arm64 (Raspberry Pi), not forking
 
-   > **Push tags one at a time. Never `git push --tags`.** This repo inherited eight tags from
-   > upstream (`v0.0.1` through `v0.0.5` and some `-rc` variants) that are *not* published here.
-   > `--tags` would push all of them, and every one would start its own four-architecture build and
-   > publish its own release. `git tag -l` shows what you are carrying.
+The one thing that does not work out of the box is the published image, which is `linux/amd64`.
+Build it locally instead — everything else in Setup is unchanged.
 
-   To see what exists, locally and published:
-
-   ```bash
-   git tag -l                        # local, including the inherited ones
-   git ls-remote --tags origin       # what is actually published
-   ```
-
-   To move or remove a tag you got wrong — delete it in both places, then re-tag:
-
-   ```bash
-   git tag -d v1.0.0                 # local
-   git push origin :refs/tags/v1.0.0 # remote
-   git tag v1.0.0 COMMIT_SHA        # substitute a real sha -- an angle-bracket
-   git push origin v1.0.0           # placeholder would be read by bash as a redirect
-   ```
-
-   Deleting the tag does **not** delete the GitHub Release it created; that has to be removed from
-   the Releases page separately, or the next push of the same tag attaches to the old one. And
-   anyone who already fetched the tag keeps their copy pointing at the old commit — which is why
-   moving a published tag is worth avoiding rather than merely fixing.
-
-3. **Build locally** for one architecture, using the matching toolchain image:
-
-   ```bash
-   docker run --rm -v "$PWD":/workdir -w /workdir \
-     ghcr.io/OWNER/altserver_builder_alpine_aarch64 \
-     bash -c 'mkdir -p build; cd build; make -f ../Makefile -j"$(nproc)"'
-   ```
-
-   Substitute your GitHub account for `OWNER`, and `_amd64`, `_armv7` or `_i386` for a
-   different target. On a host of a different
-   architecture this runs under emulation and is slow, but it works.
-
-The **container image** is a separate matter: `build_image.yml` publishes `linux/amd64` only. An
-arm64 host builds it locally — see the note above.
-
-### Running on a Raspberry Pi (or any arm64 host)
-
-You do **not** need to fork. The only thing that does not work out of the box is the published
-container image, which is `linux/amd64`. Everything else is the same as Setup.
-
-**How the pieces fit**, since this is worth understanding before changing it: the image is built in
-two stages. The first stage runs inside a prebuilt *toolchain* image that already contains
-corecrypto, cpprestsdk, boost and libzip — the things that are slow and awkward to build — and
-compiles AltServer inside it. The second stage copies just the finished binary into a small Debian
-runtime. So building on a Pi means pointing stage one at the **arm64 toolchain**, which is already
-published, rather than compiling those dependencies yourself.
-
-Clone, build the image locally, and deploy the stack against it:
+**How the build works**, because the fix only makes sense once you know: the image is built in two
+stages. Stage one runs inside a prebuilt *toolchain* image that already contains corecrypto,
+cpprestsdk, boost and libzip — the slow, awkward dependencies — and compiles AltServer there.
+Stage two copies the finished binary into a small Debian runtime. Building on a Pi means pointing
+stage one at the **arm64 toolchain**, which is already published, not compiling those dependencies
+yourself.
 
 ```bash
 git clone --recursive https://github.com/Ben-Diehlci/altserver-linux.git
@@ -470,58 +417,135 @@ docker build -f docker/Dockerfile \
   -t ghcr.io/ben-diehlci/altserver-linux:latest .
 ```
 
-Tagging it with the name the stack already expects means `deploy/altserver-stack.yml` needs no
-edit — Docker finds the local image and does not pull.
+Both `--build-arg`s matter, and they are **not** the same value:
 
-> **If you deploy through Portainer, prefer the `build:` block instead.** Ticking "re-pull image"
-> on a stack update does exactly what it says: it fetches the amd64 image from the registry and
-> throws your local arm64 build away, and the containers then fail with an exec-format error. The
-> same-name trick is fine for plain `docker compose`, where nothing re-pulls behind you.
-
-To have compose build it, uncomment the `build:` block in `deploy/altserver-stack.yml` and set
-these two in the stack environment:
-
-```
-ALTSERVER_BUILD_ARCH=aarch64
-ALTSERVER_TARGETARCH=arm64
-```
-
-That way the image is rebuilt from source on every stack update rather than pulled, which is what
-you want on a platform the registry has no image for.
-
-Both `--build-arg`s matter and they are **not** the same value:
-
-| Arg | Value on arm64 | What it selects |
+| Arg | Value on arm64 | Selects |
 |---|---|---|
 | `BUILDER` | `…_aarch64` | the toolchain image, named for the gcc triple |
-| `TARGETARCH` | `arm64` | which netmuxd release to download, named for Docker's platform |
+| `TARGETARCH` | `arm64` | which netmuxd release to fetch, named for Docker's platform |
 
-Set only the first and you get a correctly compiled arm64 AltServer that then downloads an
-**x86_64 netmuxd** and fails at startup with a rosetta or exec-format error. Modern Docker routes
-`docker build` through buildx, which sets `TARGETARCH` for you — but passing it explicitly costs
-nothing and does not depend on which builder your Pi has.
+Set only the first and you get a correctly compiled arm64 AltServer that downloads an **x86_64
+netmuxd** and dies at startup with an exec-format error. Modern Docker routes `docker build`
+through buildx, which sets `TARGETARCH` for you, but passing it explicitly costs nothing.
 
-Expect the build to take a while. It is native on the Pi rather than emulated, so it is not slow
-for the reason you might assume — it is slow because a Pi is a Pi.
+Tagging it with the name the stack already expects means no file edit — Docker finds the local
+image and does not pull.
 
-### If you fork this
+> **Through Portainer, use the `build:` block instead.** Ticking "re-pull image" on a stack update
+> fetches the amd64 image from the registry and discards your local arm64 build, and the containers
+> then fail with exec-format errors. Uncomment `build:` in
+> [`deploy/altserver-stack.yml`](deploy/altserver-stack.yml) and set these in the stack
+> environment:
+>
+> ```
+> ALTSERVER_BUILD_ARCH=aarch64
+> ALTSERVER_TARGETARCH=arm64
+> ```
+>
+> Then it is rebuilt from source on every update rather than pulled, which is what you want on a
+> platform the registry has no image for.
 
-Most of it follows you without edits. The published image name is derived from
+Expect it to take a while. It is native rather than emulated — it is slow because a Pi is a Pi.
+
+### Path C — armv7 or i386
+
+No container stack. Build the static binary and run it directly — see
+[Reference](#reference) for flags and environment, and
+[Runtime requirements](#runtime-requirements) for what the host needs, since nothing is bundled
+for you.
+
+```bash
+docker run --rm -v "$PWD":/workdir -w /workdir \
+  ghcr.io/ben-diehlci/altserver_builder_alpine_armv7 \
+  bash -c 'mkdir -p build; cd build; make -f ../Makefile -j"$(nproc)"'
+```
+
+Swap `_i386` for the other. USB install works; wireless refresh needs a netmuxd you build yourself.
+
+---
+
+### If you fork it
+
+Most of it follows you with no edits — the published image name derives from
 `github.repository_owner`, so your images go to your namespace automatically.
 
-Two knobs, both set as repository variables rather than file edits — **Settings → Secrets and
-variables → Actions → Variables**:
+**Pushing:** an ordinary push builds **amd64 only**, because the other three run under QEMU on the
+runner and take several times longer. Paying that per-commit is latency for no benefit; dropping
+them entirely would make this useless on a Pi.
 
-| Variable | Effect | When you need it |
+Two knobs, both **repository variables rather than file edits**, because a git-backed stack
+overwrites hand edits on its next pull:
+
+| Variable | Where | Set it when |
 |---|---|---|
-| `BUILDER_NAMESPACE` | Which toolchain images the build pulls | After running **Build buildenv Docker** to publish your own. Until then the default set is public and works |
-| `ALTSERVER_APPARMOR` | Which AppArmor profile the stack requests (this one goes in Portainer's stack environment, not Actions) | After `sudo bash deploy/apparmor/install.sh` on the host |
+| `BUILDER_NAMESPACE` | Settings → Secrets and variables → Actions | you have run **Build buildenv Docker** to publish your own toolchain. Until then the default set is public and works |
+| `ALTSERVER_APPARMOR` | Portainer stack environment | you have run `sudo bash deploy/apparmor/install.sh` on the host |
 
-`platforms: linux/amd64` is deliberately hardcoded. The build stage pulls an **architecture-specific**
-Alpine toolchain, so a plain multi-arch `platforms:` list would run the amd64 toolchain under
-emulation and still emit an amd64 binary — an image that is mislabelled rather than merely slow.
-Multi-arch needs a per-architecture `BUILDER` arg, which is what the four-way matrix in
-`build.yml` does for the static binaries.
+`platforms: linux/amd64` in `build_image.yml` is hardcoded deliberately. Stage one pulls an
+**architecture-specific** toolchain, so a plain multi-arch `platforms:` list would run the amd64
+toolchain under emulation and still emit an amd64 binary — an image that is mislabelled rather than
+merely slow. Multi-arch needs a per-architecture `BUILDER`, which is what `build.yml`'s four-way
+matrix does for the static binaries.
+
+---
+
+## Downloads and releases
+
+- **Container image:** `ghcr.io/<owner>/altserver-linux:latest`, built by
+  [`build_image.yml`](.github/workflows/build_image.yml). `linux/amd64` only — see Path B.
+- **Static binaries:** GitHub Actions artifacts. **`chmod +x` after downloading** — artifact upload
+  does not preserve the executable bit.
+
+The four binaries and their names:
+
+| Matrix name | Binary inside | Typical host |
+|---|---|---|
+| `amd64` | `AltServer-x86_64` | servers, NAS, VMs |
+| `aarch64` | `AltServer-aarch64` | Raspberry Pi 4/5 64-bit |
+| `armv7` | `AltServer-armv7` | older 32-bit Pi |
+| `i386` | `AltServer-i386` | legacy 32-bit x86 |
+
+Note the mismatch: the **artifact** is named for the matrix label (`AltServer-amd64`) while the
+**binary inside it** is named for the gcc triple (`AltServer-x86_64`). Only amd64 differs, which is
+exactly why it surprises.
+
+### Getting all four architectures
+
+**Actions → Build AltServer → Run workflow**, tick **"Build every architecture, not just amd64"**.
+Nothing is published; the binaries appear as artifacts on that run. Best for a one-off.
+
+**Or push a tag**, which builds all four *and* publishes them as a GitHub Release. Any tag name
+triggers it — the workflow matches `refs/tags/*` — and the release takes the tag's name, so follow
+the existing `vMAJOR.MINOR.PATCH` convention:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+> **Push tags one at a time. Never `git push --tags`.** This repo inherited eight tags from upstream
+> (`v0.0.1` through `v0.0.5` and some `-rc` variants) that are *not* published here. `--tags` would
+> push all of them, and every one would start its own four-architecture build and publish its own
+> release.
+
+```bash
+git tag -l                        # local, including the inherited ones
+git ls-remote --tags origin       # what is actually published
+```
+
+To move or remove a tag — delete it in both places, then re-tag:
+
+```bash
+git tag -d v1.0.0                 # local
+git push origin :refs/tags/v1.0.0 # remote
+git tag v1.0.0 COMMIT_SHA         # substitute a real sha -- an angle-bracket
+git push origin v1.0.0            # placeholder would be read by bash as a redirect
+```
+
+Deleting the tag does **not** delete the GitHub Release it created; remove that from the Releases
+page separately, or the next push of the same tag attaches to the old one. Anyone who already
+fetched a moved tag keeps their copy pointing at the old commit — which is why moving a published
+tag is worth avoiding rather than merely fixing.
 
 ---
 
