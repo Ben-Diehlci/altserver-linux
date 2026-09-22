@@ -88,6 +88,13 @@ jobs:
       - name: Install-log redaction actually redacts
         run: python3 tests/check_redaction.py
 
+      # 264 characters that are not on a keyboard had accumulated in the docs. Two classes of them
+      # were load-bearing, not cosmetic: a line STARTING with an em dash becomes a Markdown bullet
+      # the moment it is replaced with "- ", and an em dash in a heading is stripped from the
+      # anchor slug where a hyphen is kept, so retitling silently breaks every link to it.
+      - name: Tracked text files are pure ASCII
+        run: python3 tests/check_ascii_punctuation.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"

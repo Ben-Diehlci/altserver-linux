@@ -1,4 +1,4 @@
-# AltServer-Linux + anisette — the whole thing as one Portainer stack.
+# AltServer-Linux + anisette - the whole thing as one Portainer stack.
 #
 # Portainer: Stacks -> Add stack -> Repository, point it at this repo and set the compose path to
 # deploy/altserver-stack.yml. Or paste this into the Web editor.
@@ -57,7 +57,7 @@ services:
       # network_mode: host below.
       - "127.0.0.1:6969:6969"
     volumes:
-      # The machine identity. Mount this DIRECTORY, never its lib/ subdirectory — the upstream
+      # The machine identity. Mount this DIRECTORY, never its lib/ subdirectory - the upstream
       # README says lib/, which persists only the Apple .so cache and loses device.json + adi.pb
       # on every stack update. That is issue #86.
       # Swap for an absolute bind mount if you prefer an inspectable host path:
@@ -136,7 +136,7 @@ services:
 
   altserver:
     # Published by .github/workflows/build_image.yml. To build from source instead, comment the
-    # image line and uncomment build: — useful if you want a arch other than the published one.
+    # image line and uncomment build: - useful if you want a arch other than the published one.
     image: ghcr.io/ben-diehlci/altserver-linux:latest
     # build:
     #   context: ..
@@ -198,7 +198,7 @@ services:
 
     # REQUIRED, and not negotiable: mDNS/Bonjour is link-local and does not cross a Docker bridge.
     # On a bridge the phone can never discover _altserver._tcp no matter what else is correct.
-    # Note this makes `ports:` meaningless here — AltServer binds an EPHEMERAL port that differs
+    # Note this makes `ports:` meaningless here - AltServer binds an EPHEMERAL port that differs
     # on every start (ConnectionManager sets sin_port = 0), so no static rule could work anyway.
     network_mode: host
 
@@ -227,7 +227,7 @@ services:
 
     volumes:
       # AltServerData. The app writes to the RELATIVE path ./AltServerData against its working
-      # directory, which the image sets to /data — so this mount is what makes it persist.
+      # directory, which the image sets to /data - so this mount is what makes it persist.
       # Also where to put AltStore.ipa for the first-time install.
       # Swap for a bind mount if you want to drop files in from the host easily:
       #   - /opt/stacks/altserver/data:/data

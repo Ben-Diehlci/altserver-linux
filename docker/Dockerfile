@@ -1,12 +1,12 @@
-# AltServer-Linux — self-contained image.
+# AltServer-Linux - self-contained image.
 #
 # Builds the binary from this repo and installs every RUNTIME prerequisite, so nothing has to be
 # apt-installed on the host by hand. The two that are easy to miss, and both fail SILENTLY:
 #
-#   python3                       — AltServer is a -static binary and therefore cannot dlopen
+#   python3                       - AltServer is a -static binary and therefore cannot dlopen
 #                                   Bonjour itself. It shells out to python3, which dlopens
 #                                   libdns_sd.so on its behalf (libraries/dnssd_loader).
-#   libavahi-compat-libdnssd-dev  — NOT ...-libdnssd1. The runtime package ships only
+#   libavahi-compat-libdnssd-dev  - NOT ...-libdnssd1. The runtime package ships only
 #                                   libdns_sd.so.1, while the code dlopens the UNVERSIONED
 #                                   soname, whose symlink comes from the -dev package.
 #
@@ -14,7 +14,7 @@
 # by the phone. The image verifies both at build time so that cannot ship broken.
 
 # ---------------------------------------------------------------------------------------------
-# Build stage — uses the project's own alpine toolchain, which carries the static corecrypto,
+# Build stage - uses the project's own alpine toolchain, which carries the static corecrypto,
 # cpprestsdk, boost and libzip this build needs. Override BUILDER for a different architecture:
 #   ..._amd64 (default) | ..._aarch64 | ..._armv7 | ..._i386
 # ---------------------------------------------------------------------------------------------
@@ -25,7 +25,7 @@ FROM ${BUILDER} AS build
 WORKDIR /src
 COPY . /src
 
-# The binary is named for the gcc triple (AltServer-x86_64, AltServer-aarch64, …), so normalise
+# The binary is named for the gcc triple (AltServer-x86_64, AltServer-aarch64, ...), so normalise
 # it to a single known path for the runtime stage to copy.
 RUN set -eux; \
     rm -rf build; mkdir -p build /out; \
@@ -122,7 +122,7 @@ COPY docker/redact-log.py /usr/local/bin/redact-log
 RUN chmod +x /usr/local/bin/fetch-altstore /usr/local/bin/docker-entrypoint /usr/local/bin/redact-log
 
 # AltServerApp writes to the RELATIVE path ./AltServerData, resolved against the working
-# directory — so the workdir is load-bearing, not cosmetic. Mount a volume here to persist it.
+# directory - so the workdir is load-bearing, not cosmetic. Mount a volume here to persist it.
 WORKDIR /data
 
 # Sane defaults; override in compose.
@@ -130,7 +130,7 @@ WORKDIR /data
 #   to be hardcoded is dead, and a shared anisette identity can get Apple IDs locked.
 ENV ALTSERVER_ANISETTE_SERVER=""
 
-# Documents intent only. mDNS needs the host network, so compose must set network_mode: host —
+# Documents intent only. mDNS needs the host network, so compose must set network_mode: host -
 # a published port cannot help, and Bonjour does not cross a bridge.
 EXPOSE 51820
 

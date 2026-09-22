@@ -121,7 +121,7 @@ PAGE = """<!doctype html>
   <header>
     <h1>AltServer status</h1>
     <div class="meta">
-      <span id="overall" class="overall">checking…</span>
+      <span id="overall" class="overall">checking...</span>
       &nbsp;<span id="host"></span> &middot; <span id="when"></span>
     </div>
   </header>

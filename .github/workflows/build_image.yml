@@ -4,7 +4,7 @@ name: Build AltServer Image
 # stack can just pull it instead of building on the host.
 #
 # Uses ${{ github.repository_owner }} rather than a hardcoded namespace, so a fork publishes to
-# its OWN namespace and does not fail against someone else's — which is exactly the mistake
+# its OWN namespace and does not fail against someone else's - which is exactly the mistake
 # build_docker.yml makes by hardcoding ghcr.io/nyamisty.
 
 on:
@@ -69,7 +69,7 @@ jobs:
         run: echo "image=${REGISTRY}/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/altserver-linux" >> "$GITHUB_OUTPUT"
 
       # amd64 only for now. The build stage pulls an ARCH-SPECIFIC alpine builder image, so a
-      # multi-arch build needs a per-arch BUILDER arg rather than a plain platforms: list —
+      # multi-arch build needs a per-arch BUILDER arg rather than a plain platforms: list -
       # buildx would otherwise run the amd64 toolchain under emulation and still emit an amd64
       # binary, producing an image that is mislabelled rather than merely slow.
       - name: Build and push

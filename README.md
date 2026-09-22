@@ -4,12 +4,12 @@
 
 ## What this is
 
-Apps installed outside the App Store — through [AltStore](https://altstore.io) — are signed with
+Apps installed outside the App Store - through [AltStore](https://altstore.io) - are signed with
 a free Apple developer certificate that **expires after 7 days**. Something has to re-sign them
 before then, or they stop opening. Normally that something is AltServer on a Mac or Windows PC,
 which has to be awake and on the same Wi-Fi when the deadline comes round.
 
-This runs that job on a Linux machine instead — a home server, a NAS, a Raspberry Pi, a VM. Set it
+This runs that job on a Linux machine instead - a home server, a NAS, a Raspberry Pi, a VM. Set it
 up once and your sideloaded apps keep refreshing by themselves, over Wi-Fi, with nothing else
 switched on.
 
@@ -20,7 +20,7 @@ switched on.
 | A Linux host with Docker | Written against Ubuntu 24.04; nothing is Ubuntu-specific beyond the `apt` lines |
 | An iPhone or iPad | On the same network as the host |
 | A USB cable | **Once**, for the first pairing. Never needed again after that |
-| An Apple ID | Ideally a secondary one — see the warning in [Setup](#setup) |
+| An Apple ID | Ideally a secondary one - see the warning in [Setup](#setup) |
 | ~30 minutes | Most of it waiting on downloads |
 
 A free Apple ID caps you at **3 sideloaded apps**, 10 new app IDs per week, and the 7-day
@@ -37,7 +37,7 @@ certificate. A paid developer account raises those limits but is not required.
 
 | You want to | Go to |
 |---|---|
-| Install it | **[Setup](#setup)** — seven steps, start to finish |
+| Install it | **[Setup](#setup)** - seven steps, start to finish |
 | Understand the design | [How the build works](#how-the-build-works) and [docs/REVIVAL.md](docs/REVIVAL.md) |
 | Deploy on a Pi, or any non-amd64 host | [Deploying on your platform](#deploying-on-your-platform) |
 | Run the binary without Docker | [Reference](#reference) |
@@ -49,7 +49,7 @@ certificate. A paid developer account raises those limits but is not required.
 
 > **This is a fork** of [NyaMisty/AltServer-Linux](https://github.com/NyaMisty/AltServer-Linux),
 > whose last real code commit predates 2025 and whose CI had been failing on every run. The table
-> below is what this fork changed — useful if you arrived from upstream or an issue thread, and
+> below is what this fork changed - useful if you arrived from upstream or an issue thread, and
 > safe to skip if you just want it running.
 
 | | |
@@ -67,10 +67,10 @@ certificate. A paid developer account raises those limits but is not required.
 ## Setup
 
 > **Use a secondary Apple ID if you have one.** Issue [#88](https://github.com/NyaMisty/AltServer-Linux/issues/88) documents Apple IDs being *locked* after
-> trouble with the machine-identity server this relies on (anisette — explained in step 3). An app-specific password will **not** work — sideloading needs the real
+> trouble with the machine-identity server this relies on (anisette - explained in step 3). An app-specific password will **not** work - sideloading needs the real
 > password plus a 2FA code. Free accounts cap at 3 sideloaded apps, 10 app IDs/week, 7-day certs.
 
-> **Never run a second signing agent against the same Apple ID** — a Mac or Windows AltServer,
+> **Never run a second signing agent against the same Apple ID** - a Mac or Windows AltServer,
 > Sideloadly, or Xcode. Each one revokes the other's certificate, and your apps stop opening.
 
 ### 1. Host prerequisites
@@ -88,7 +88,7 @@ sudo apt install -y avahi-daemon avahi-utils usbmuxd libimobiledevice-utils
 | `usbmuxd` | Owns the USB cable for step 2's one-time pairing. The stack bind-mounts `/var/run/usbmuxd` |
 | `libimobiledevice-utils` | `idevice_id` / `idevicepair`, used to confirm the pairing worked |
 
-Do **not** `systemctl enable usbmuxd` on Ubuntu — it is udev-activated and has no `[Install]`
+Do **not** `systemctl enable usbmuxd` on Ubuntu - it is udev-activated and has no `[Install]`
 section, so `enable` prints a confusing "unit files have no installation config" message. It starts
 on its own when an iOS device is plugged in, and exits when the last one is unplugged. That is
 normal and is exactly why the stack ships netmuxd for the wireless path.
@@ -99,7 +99,7 @@ systemctl is-active avahi-daemon          # expect: active
 
 ### 2. Pair the iPhone (USB cable, once)
 
-Do this before deploying anything. Wireless pairing is not possible in this build —
+Do this before deploying anything. Wireless pairing is not possible in this build -
 `HAVE_WIRELESS_PAIRING` is undefined, and Apple restricts it to Apple TV.
 
 Plug the iPhone into the host, unlock it, and tap **Trust**. If the host is a VM, pass the USB
@@ -111,7 +111,7 @@ idevicepair validate             # expect: SUCCESS
 ```
 
 The pairing record lands in `/var/lib/lockdown/` on the host, which the stack mounts. Back up
-**both** files together — they are not independent, and half a pairing is indistinguishable from
+**both** files together - they are not independent, and half a pairing is indistinguishable from
 none:
 
 ```bash
@@ -127,13 +127,13 @@ Everything else runs as one stack: AltServer, an anisette server, netmuxd for th
 transport, and a web UI that drives the install.
 
 > **Anisette**, since it comes up constantly below: Apple will not accept a sign-in unless the
-> request carries proof that it came from a real, consistent machine — a set of `X-Apple-*`
+> request carries proof that it came from a real, consistent machine - a set of `X-Apple-*`
 > headers derived from a provisioning blob Apple issues on first contact. An anisette server
 > generates those. It is why sign-in can fail with a clock error, and why that identity is worth
 > backing up: lose it and Apple sees a brand-new machine, which means another 2FA prompt and,
 > if it happens repeatedly, the account lockouts issue [#88](https://github.com/NyaMisty/AltServer-Linux/issues/88) describes.
 
-**Portainer → Stacks → Add stack → Repository**, pointing at this repo with compose path
+**Portainer -> Stacks -> Add stack -> Repository**, pointing at this repo with compose path
 `deploy/altserver-stack.yml`. Or with plain compose:
 
 ```bash
@@ -147,7 +147,7 @@ always current.
 > **On a Raspberry Pi or anything not x86_64, stop here and read
 > [Deploying on your platform](#deploying-on-your-platform) first.** The published image is
 > `linux/amd64`, so the pull above fails on other architectures. It is one extra command, not a
-> different procedure — then you come straight back to this step.
+> different procedure - then you come straight back to this step.
 
 Then open **`http://<your-host>:8099`**.
 
@@ -155,12 +155,12 @@ Then open **`http://<your-host>:8099`**.
 
 - **`security_opt: apparmor=unconfined`** on the `altserver` and `altserver-web` services. Docker's
   default AppArmor profile contains no `dbus` rules at all, and AppArmor denies a mediated class it
-  does not mention — so the very first call a Bonjour client makes is refused, mDNS silently fails,
+  does not mention - so the very first call a Bonjour client makes is refused, mDNS silently fails,
   and the server is invisible to your phone. This is why the default is `unconfined` rather than
   carelessness.
 
   **Optional, and better:** [`deploy/apparmor/altserver-mdns`](deploy/apparmor/) is
-  `docker-default` plus only the two D-Bus rules Bonjour needs — the bus handshake and
+  `docker-default` plus only the two D-Bus rules Bonjour needs - the bus handshake and
   `org.freedesktop.Avahi`. The container still cannot reach systemd, NetworkManager, or anything
   else on the bus. To switch, **in this order**:
 
@@ -172,7 +172,7 @@ Then open **`http://<your-host>:8099`**.
   matters: a container requesting a profile the host kernel has not loaded **fails to start**. The
   script verifies the profile actually loaded before telling you to continue.
 
-  Afterwards, check it took — and check from **another machine**, because a too-tight profile
+  Afterwards, check it took - and check from **another machine**, because a too-tight profile
   breaks mDNS silently, which is the exact failure the profile exists to fix:
 
   ```bash
@@ -188,8 +188,8 @@ Then open **`http://<your-host>:8099`**.
 #### The anisette trap, if you deploy anisette separately
 
 Every copy of the upstream docs says to mount `/home/Alcoholic/.config/anisette-v3/lib/`. That is
-**wrong**. `lib/` holds only the two Apple `.so` files downloaded at first run; the machine identity
-— `device.json` and the ADI provisioning blob — lives one level **up**. Mount the parent, or you
+**wrong**. `lib/` holds only the two Apple `.so` files downloaded at first run; the machine identity -
+`device.json` and the ADI provisioning blob - lives one level **up**. Mount the parent, or you
 re-provision on every redeploy and collect 2FA prompts forever.
 
 [`deploy/altserver-stack.yml`](deploy/altserver-stack.yml) already gets this right with a named
@@ -202,7 +202,7 @@ anisette on its own.
 curl -fsS http://127.0.0.1:6969 | jq 'keys'     # ten X-Apple-* keys, all strings
 ```
 
-The status page at `/` checks this and more. **Survive a redeploy, not just a restart** — `docker
+The status page at `/` checks this and more. **Survive a redeploy, not just a restart** - `docker
 restart` keeps the container's filesystem, so it proves nothing about persistence. Recreate the
 container and confirm the identity is still there.
 
@@ -217,11 +217,11 @@ no terminal. The web UI supervises the process and delivers the code to a read w
 > **The install page takes an Apple ID password over plain HTTP.** On a trusted LAN that is a
 > considered trade-off. Anywhere else, change the `altserver-web` command to
 > `["--host", "127.0.0.1", "--port", "8099"]` and reach it over an SSH tunnel:
-> `ssh -L 8099:127.0.0.1:8099 you@your-host`. Never put it behind a reverse proxy or a tunnel —
+> `ssh -L 8099:127.0.0.1:8099 you@your-host`. Never put it behind a reverse proxy or a tunnel -
 > this is LAN-only by design.
 
 Credentials go to AltServer through the **environment**, never a command line, and the install log
-shown in the browser is filtered before it is rendered — enforced by
+shown in the browser is filtered before it is rendered - enforced by
 [`tests/check_redaction.py`](tests/check_redaction.py). `docker logs` is **not** filtered and does
 contain the full account record and bearer tokens.
 
@@ -231,19 +231,19 @@ contain the full account record and bearer tokens.
 |---|---|
 | `No anisette server is configured` | `ALTSERVER_ANISETTE_SERVER` unset |
 | `ALTSERVER_ANISETTE_SERVER is not a usable URL` | Missing `http://` scheme |
-| `Could not reach the anisette server at …` | Container not running, or wrong port |
-| `… returned HTTP 502/404. Response body: …` | Anisette up but unhealthy — the body is quoted for you |
-| `… did not return a JSON object` | Wrong endpoint; you are getting HTML |
-| `… no "X-Apple-I-MD-M" field` | Protocol mismatch — re-check step 3 |
-| `-36607` / "Unable to sign you in" | Anisette identity or clock. Check NTP **on the anisette host** — its timestamp is forwarded to Apple verbatim |
+| `Could not reach the anisette server at ...` | Container not running, or wrong port |
+| `... returned HTTP 502/404. Response body: ...` | Anisette up but unhealthy - the body is quoted for you |
+| `... did not return a JSON object` | Wrong endpoint; you are getting HTML |
+| `... no "X-Apple-I-MD-M" field` | Protocol mismatch - re-check step 3 |
+| `-36607` / "Unable to sign you in" | Anisette identity or clock. Check NTP **on the anisette host** - its timestamp is forwarded to Apple verbatim |
 | `AltServer could not find the device` | Pairing or usbmuxd, **not** mDNS at this stage |
-| `Finished!` | **Not proof of success** — it prints even on failure. Read the lines above it |
+| `Finished!` | **Not proof of success** - it prints even on failure. Read the lines above it |
 
 ### 5. Verify it actually worked
 
 1. AltStore appears on the home screen.
-2. **Settings → General → VPN & Device Management** → trust the developer certificate.
-3. **Open AltStore.** This is the real test — an app that installs but will not launch is the
+2. **Settings -> General -> VPN & Device Management** -> trust the developer certificate.
+3. **Open AltStore.** This is the real test - an app that installs but will not launch is the
    failure mode issue [#131](https://github.com/NyaMisty/AltServer-Linux/issues/131) described, and that is fixed in this fork.
 
 ### 6. Wireless refresh
@@ -259,9 +259,9 @@ command: ["--socket-path", "/run/muxd/usbmuxd", "--disable-usb", ...]
 ```
 
 so the host's usbmuxd is left completely alone to handle the cable, and nothing contends for
-anything. **Do not stop usbmuxd** — older guidance says to, because netmuxd binds `/var/run/usbmuxd`
+anything. **Do not stop usbmuxd** - older guidance says to, because netmuxd binds `/var/run/usbmuxd`
 by default, but this stack overrides that. AltServer is pointed at netmuxd with
-`USBMUXD_SOCKET_ADDRESS` (note the spelling — the widely-copied `USBMUXD_SOCKET_ADRESS`, one D, is
+`USBMUXD_SOCKET_ADDRESS` (note the spelling - the widely-copied `USBMUXD_SOCKET_ADRESS`, one D, is
 silently ignored).
 
 Requirements on the phone side, both normally already true after step 2:
@@ -272,11 +272,11 @@ Requirements on the phone side, both normally already true after step 2:
 | `lockdownd` accepts network connections | port **62078** open on the phone's IP |
 
 Port 62078 is the one that matters. The port in the mDNS TXT record is a different service and
-refuses connections — which looks alarming and is not.
+refuses connections - which looks alarming and is not.
 
 AltStore refreshes itself: it sets an hourly background-fetch interval and runs a
 `BackgroundRefreshAppsOperation`. iOS grants that at its own discretion, so if an app ever expires
-unexpectedly, that is why — not the server.
+unexpectedly, that is why - not the server.
 
 ### 7. Don't lose it
 
@@ -286,7 +286,7 @@ docker run --rm -v STACK_anisette-config:/data -v ~:/backup \
   alpine tar czf /backup/anisette-state.tgz /data
 ```
 
-Replace `STACK` with your stack's name — `docker volume ls | grep anisette` shows the real one.
+Replace `STACK` with your stack's name - `docker volume ls | grep anisette` shows the real one.
 Angle-bracket placeholders are avoided in these blocks on purpose: bash reads `<` and `>` as
 redirections, so a pasted `<stack>` silently creates files instead of failing.
 
@@ -310,12 +310,12 @@ from here; the command lines above are for when you want to see what it is doing
 | `/install` | Apple ID sign-in with 2FA entry in the browser |
 
 The status page also carries a **live log view**. Start it, trigger a refresh from AltStore,
-and watch AltServer's own output — which is the only thing that can actually confirm a
+and watch AltServer's own output - which is the only thing that can actually confirm a
 refresh worked, since `idevice_id` and the wireless status row both use Debian's
 libimobiledevice rather than the vendored copy AltServer links.
 
 It reads a file on the volume the two containers share, written by the same redaction
-filter that protects `docker logs` — so the web UI needs neither the Docker socket (which
+filter that protects `docker logs` - so the web UI needs neither the Docker socket (which
 would be root-on-host for a service that takes an Apple ID password over plain HTTP) nor a
 host bind mount, and what it shows is already redacted. Polling runs only while watching is
 on, and stops itself after five minutes so a forgotten tab does not poll forever.
@@ -347,7 +347,7 @@ of a dead deployment is an app that will not open, a week later.
 - **Changing the Apple ID password kills unattended refresh.** A background refresh has no way to
   present a login view, so it fails permanently until someone opens AltStore **on the phone** and
   re-enters the credentials. The phone's keychain and the stack's `ALTSERVER_APPLE_PASSWORD` are
-  separate copies — updating Portainer alone is not enough.
+  separate copies - updating Portainer alone is not enough.
 - **Do not casually re-run the one-shot install.** The revoke-confirmation prompt is compiled out
   on Linux, so a revoke proceeds unattended and invalidates the certificate your installed apps
   depend on.
@@ -367,7 +367,7 @@ Usage:  AltServer-Linux options [ ipa-file ]
   -d  --debug            Print debug output, can be used several times to increase debug level.
 ```
 
-No IPA argument starts the daemon. With one, it performs a one-time install — which needs a real
+No IPA argument starts the daemon. With one, it performs a one-time install - which needs a real
 terminal, because the 2FA code is read from stdin.
 
 ### Environment
@@ -376,7 +376,7 @@ terminal, because the 2FA code is read from stdin.
 |---|---|
 | `ALTSERVER_ANISETTE_SERVER` | **Required.** Full URL including scheme, e.g. `http://127.0.0.1:6969`. There is no default |
 | `ALTSERVER_UDID` / `ALTSERVER_APPLE_ID` / `ALTSERVER_APPLE_PASSWORD` | Alternatives to `-u` / `-a` / `-p`. Prefer these: a password passed as `-p` is visible in `ps` to every user on the host |
-| `ALTSERVER_NO_CLIENTINFO_SANITIZE` | Set to `1` to stop rewriting `com.apple.dt.Xcode` in `X-MMe-Client-Info`. Diagnostic only — leave unset |
+| `ALTSERVER_NO_CLIENTINFO_SANITIZE` | Set to `1` to stop rewriting `com.apple.dt.Xcode` in `X-MMe-Client-Info`. Diagnostic only - leave unset |
 | `ALTSTORE_SKIP_FETCH` | Set to `1` to stop the container refreshing `AltStore.ipa` on start |
 
 There is deliberately **no default anisette server**. The one that used to be hardcoded has
@@ -410,13 +410,13 @@ Two questions decide everything: **what architecture is your host**, and **are y
 
 | Host | Container stack | Static binary | Refresh |
 |---|---|---|---|
-| **amd64** (x86_64) — most servers, NAS, VMs | pull the published image | yes | over Wi-Fi |
-| **arm64** (aarch64) — Raspberry Pi 4/5, Apple silicon VMs | build locally, one command | yes | over Wi-Fi |
-| **armv7** — 32-bit ARM | not supported | yes | over a cable |
-| **i386** — legacy 32-bit x86 | not supported | yes | over a cable |
+| **amd64** (x86_64) - most servers, NAS, VMs | pull the published image | yes | over Wi-Fi |
+| **arm64** (aarch64) - Raspberry Pi 4/5, Apple silicon VMs | build locally, one command | yes | over Wi-Fi |
+| **armv7** - 32-bit ARM | not supported | yes | over a cable |
+| **i386** - legacy 32-bit x86 | not supported | yes | over a cable |
 
 The bottom two are not broken, they just need the cable left plugged in. Refreshing over USB works
-the same way it always has — the host's `usbmuxd` gives AltServer the device, which is exactly what
+the same way it always has - the host's `usbmuxd` gives AltServer the device, which is exactly what
 netmuxd replaces for the cable-free case. A small always-on machine with the phone permanently
 attached is a perfectly good deployment, and arguably a good use for hardware too slow for much
 else.
@@ -443,19 +443,19 @@ lscpu | grep -i 64       # on a 32-bit OS, tells you if the CPU could do better
 |---|---|---|
 | x86 server, NAS, mini PC, VM | `x86_64` | **A** |
 | Raspberry Pi 5 | `aarch64` | **B** |
-| Raspberry Pi 4 — 64-bit OS | `aarch64` | **B** |
-| Raspberry Pi 4 — 32-bit OS | `armv7l` | **B** after reinstalling 64-bit, see below |
-| Raspberry Pi 3 / 3B+ / Zero 2 W — 64-bit OS | `aarch64` | **B** |
-| Raspberry Pi 3 / 3B+ / Zero 2 W — 32-bit OS | `armv7l` | **B** after reinstalling 64-bit, see below |
-| Raspberry Pi 2 | `armv7l` | **C** — 32-bit only, no 64-bit option |
+| Raspberry Pi 4 - 64-bit OS | `aarch64` | **B** |
+| Raspberry Pi 4 - 32-bit OS | `armv7l` | **B** after reinstalling 64-bit, see below |
+| Raspberry Pi 3 / 3B+ / Zero 2 W - 64-bit OS | `aarch64` | **B** |
+| Raspberry Pi 3 / 3B+ / Zero 2 W - 32-bit OS | `armv7l` | **B** after reinstalling 64-bit, see below |
+| Raspberry Pi 2 | `armv7l` | **C** - 32-bit only, no 64-bit option |
 | **Raspberry Pi 1, Zero, Zero W** | `armv6l` | **Not supported.** ARMv6; the armv7 binary will not run |
 | Apple silicon Mac VM (UTM, Parallels, Lima) | `aarch64` | **B** |
-| Older ARM NAS — some Synology, QNAP, Odroid, Orange Pi | usually `armv7l` | **C** |
+| Older ARM NAS - some Synology, QNAP, Odroid, Orange Pi | usually `armv7l` | **C** |
 | Old 32-bit x86 thin client or netbook | `i686` | **C** |
 
 The Pi Zero and Zero W are the trap in that list: they look like the obvious tiny always-on machine
 for this, but their ARM1176 core is **ARMv6**, and an armv7 binary will fail with an illegal
-instruction. The **Zero 2 W** is a different chip entirely (Cortex-A53) and works fine — prefer it.
+instruction. The **Zero 2 W** is a different chip entirely (Cortex-A53) and works fine - prefer it.
 
 > **If you are on armv7, check whether you actually need to be.** Raspberry Pi OS shipped 32-bit by
 > default until 2022, so a Pi 3, 4 or Zero 2 W installed a few years ago reports as `armv7` even
@@ -468,19 +468,19 @@ Genuinely 32-bit-only hardware takes the cabled route, Path C.
 
 ---
 
-### Path A — amd64, not forking
+### Path A - amd64, not forking
 
 Nothing to change. Follow [Setup](#setup). The stack pulls
 `ghcr.io/ben-diehlci/altserver-linux:latest`, which is public.
 
-### Path B — arm64 (Raspberry Pi), not forking
+### Path B - arm64 (Raspberry Pi), not forking
 
 The one thing that does not work out of the box is the published image, which is `linux/amd64`.
-Build it locally instead — everything else in Setup is unchanged.
+Build it locally instead - everything else in Setup is unchanged.
 
 **How the build works**, because the fix only makes sense once you know: the image is built in two
 stages. Stage one runs inside a prebuilt *toolchain* image that already contains corecrypto,
-cpprestsdk, boost and libzip — the slow, awkward dependencies — and compiles AltServer there.
+cpprestsdk, boost and libzip - the slow, awkward dependencies - and compiles AltServer there.
 Stage two copies the finished binary into a small Debian runtime. Building on a Pi means pointing
 stage one at the **arm64 toolchain**, which is already published, not compiling those dependencies
 yourself.
@@ -498,14 +498,14 @@ Both `--build-arg`s matter, and they are **not** the same value:
 
 | Arg | Value on arm64 | Selects |
 |---|---|---|
-| `BUILDER` | `…_aarch64` | the toolchain image, named for the gcc triple |
+| `BUILDER` | `..._aarch64` | the toolchain image, named for the gcc triple |
 | `TARGETARCH` | `arm64` | which netmuxd release to fetch, named for Docker's platform |
 
 Set only the first and you get a correctly compiled arm64 AltServer that downloads an **x86_64
 netmuxd** and dies at startup with an exec-format error. Modern Docker routes `docker build`
 through buildx, which sets `TARGETARCH` for you, but passing it explicitly costs nothing.
 
-Tagging it with the name the stack already expects means no file edit — Docker finds the local
+Tagging it with the name the stack already expects means no file edit - Docker finds the local
 image and does not pull.
 
 > **Through Portainer, use the `build:` block instead.** Ticking "re-pull image" on a stack update
@@ -522,11 +522,11 @@ image and does not pull.
 > Then it is rebuilt from source on every update rather than pulled, which is what you want on a
 > platform the registry has no image for.
 
-Expect it to take a while. It is native rather than emulated — it is slow because a Pi is a Pi.
+Expect it to take a while. It is native rather than emulated - it is slow because a Pi is a Pi.
 
-### Path C — armv7 or i386
+### Path C - armv7 or i386
 
-No container stack. Build the static binary and run it directly — see
+No container stack. Build the static binary and run it directly - see
 [Reference](#reference) for flags and environment, and
 [Runtime requirements](#runtime-requirements) for what the host needs, since nothing is bundled
 for you.
@@ -539,7 +539,7 @@ docker run --rm -v "$PWD":/workdir -w /workdir \
 
 Swap `_i386` for the other.
 
-Leave the phone connected and refreshing works normally through the host's `usbmuxd` — you are
+Leave the phone connected and refreshing works normally through the host's `usbmuxd` - you are
 trading the convenience of a cable-free setup, not the function. If you later want wireless, it
 needs a netmuxd built from source (it is Rust) for that target, or a move to 64-bit per the note
 above.
@@ -548,7 +548,7 @@ above.
 
 ### If you fork it
 
-Most of it follows you with no edits — the published image name derives from
+Most of it follows you with no edits - the published image name derives from
 `github.repository_owner`, so your images go to your namespace automatically.
 
 **Pushing:** an ordinary push builds **amd64 only**, because the other three run under QEMU on the
@@ -560,12 +560,12 @@ overwrites hand edits on its next pull:
 
 | Variable | Where | Set it when |
 |---|---|---|
-| `BUILDER_NAMESPACE` = your GitHub account, lowercased | Settings → Secrets and variables → Actions | you have run **Build buildenv Docker** to publish your own toolchain. Until then the default set is public and works |
-| `ALTSERVER_APPARMOR` = `altserver-mdns` | Portainer stack environment | you want the confined profile — see [Two settings that are load-bearing](#two-settings-that-are-load-bearing) in Setup, which applies whether you fork or not |
+| `BUILDER_NAMESPACE` = your GitHub account, lowercased | Settings -> Secrets and variables -> Actions | you have run **Build buildenv Docker** to publish your own toolchain. Until then the default set is public and works |
+| `ALTSERVER_APPARMOR` = `altserver-mdns` | Portainer stack environment | you want the confined profile - see [Two settings that are load-bearing](#two-settings-that-are-load-bearing) in Setup, which applies whether you fork or not |
 
 `platforms: linux/amd64` in `build_image.yml` is hardcoded deliberately. Stage one pulls an
 **architecture-specific** toolchain, so a plain multi-arch `platforms:` list would run the amd64
-toolchain under emulation and still emit an amd64 binary — an image that is mislabelled rather than
+toolchain under emulation and still emit an amd64 binary - an image that is mislabelled rather than
 merely slow. Multi-arch needs a per-architecture `BUILDER`, which is what `build.yml`'s four-way
 matrix does for the static binaries.
 
@@ -574,8 +574,8 @@ matrix does for the static binaries.
 ## Downloads and releases
 
 - **Container image:** `ghcr.io/<owner>/altserver-linux:latest`, built by
-  [`build_image.yml`](.github/workflows/build_image.yml). `linux/amd64` only — see Path B.
-- **Static binaries:** GitHub Actions artifacts. **`chmod +x` after downloading** — artifact upload
+  [`build_image.yml`](.github/workflows/build_image.yml). `linux/amd64` only - see Path B.
+- **Static binaries:** GitHub Actions artifacts. **`chmod +x` after downloading** - artifact upload
   does not preserve the executable bit.
 
 The four binaries and their names:
@@ -593,11 +593,11 @@ exactly why it surprises.
 
 ### Getting all four architectures
 
-**Actions → Build AltServer → Run workflow**, tick **"Build every architecture, not just amd64"** (the `all_arches` input).
+**Actions -> Build AltServer -> Run workflow**, tick **"Build every architecture, not just amd64"** (the `all_arches` input).
 Nothing is published; the binaries appear as artifacts on that run. Best for a one-off.
 
 **Or push a tag**, which builds all four *and* publishes them as a GitHub Release. Any tag name
-triggers it — the workflow matches `refs/tags/*` — and the release takes the tag's name, so follow
+triggers it - the workflow matches `refs/tags/*` - and the release takes the tag's name, so follow
 the existing `vMAJOR.MINOR.PATCH` convention:
 
 ```bash
@@ -615,7 +615,7 @@ git tag -l                        # local, including the inherited ones
 git ls-remote --tags origin       # what is actually published
 ```
 
-To move or remove a tag — delete it in both places, then re-tag:
+To move or remove a tag - delete it in both places, then re-tag:
 
 ```bash
 git tag -d v1.0.0                 # local
@@ -626,7 +626,7 @@ git push origin v1.0.0            # placeholder would be read by bash as a redir
 
 Deleting the tag does **not** delete the GitHub Release it created; remove that from the Releases
 page separately, or the next push of the same tag attaches to the old one. Anyone who already
-fetched a moved tag keeps their copy pointing at the old commit — which is why moving a published
+fetched a moved tag keeps their copy pointing at the old commit - which is why moving a published
 tag is worth avoiding rather than merely fixing.
 
 ---
@@ -644,7 +644,7 @@ tag is worth avoiding rather than merely fixing.
   ```
   Or build the container image directly: `docker build -t altserver .`
 
-- By hand (note the `cd build` — the Makefile builds into the *current* directory):
+- By hand (note the `cd build` - the Makefile builds into the *current* directory):
   ```
   cd AltServer-Linux
   mkdir build
@@ -656,13 +656,13 @@ tag is worth avoiding rather than merely fixing.
 ### How the build works
 
 This project never forked AltServer-Windows. `upstream_repo/` is a submodule of it, and the build
-**rewrites those sources at compile time** — `makefiles/rewrite_altserver_source.py` and friends
-convert `L"…"` to `U("…")`, `std::wstring` to `std::string`, `boost::filesystem` to
+**rewrites those sources at compile time** - `makefiles/rewrite_altserver_source.py` and friends
+convert `L"..."` to `U("...")`, `std::wstring` to `std::string`, `boost::filesystem` to
 `std::filesystem`, strip the Win32 GUI and splice in a console implementation. Win32 gaps are
 filled by `-include shims/windows_shim.h`.
 
 Patches to vendored code live in those rewriters rather than in the submodule, because the
-libraries are submodules: an edit in place cannot be committed here — only the submodule pointer
+libraries are submodules: an edit in place cannot be committed here - only the submodule pointer
 would move, to a commit that does not exist upstream, breaking every fresh clone.
 
 **Every rewriter fails the build if its patterns stop matching**, rather than emitting a binary
@@ -677,9 +677,9 @@ that is quietly missing a transformation:
 
 The first one needs both kinds because its substitutions fail differently. The AltServerApp.cpp
 block runs for one file and every substitution in it is mandatory, so each asserts a count. The
-global ones run over all 35 files in the directory — including binaries like `MenuBarIcon.ico` —
+global ones run over all 35 files in the directory - including binaries like `MenuBarIcon.ico` -
 and legitimately match zero times in most, so a count would be meaningless; they are checked as
-post-conditions on the output instead (no `L"…"` literal, no `boost::filesystem`, no bare
+post-conditions on the output instead (no `L"..."` literal, no `boost::filesystem`, no bare
 `std::wstring` may survive). That is stronger than counting, because it also catches an occurrence
 arriving in a form the pattern was never written to handle.
 
@@ -696,7 +696,7 @@ fixes, all applied there:
    tree root. The visible error is "No SOURCES given to target"; the real one is the
    "Cannot find source file" line above it
 
-The old note about removing `-mno-default` for ARM is **stale** — the Makefile already guards that
+The old note about removing `-mno-default` for ARM is **stale** - the Makefile already guards that
 flag to i386/i686, so ARM builds work unmodified.
 
 ---
