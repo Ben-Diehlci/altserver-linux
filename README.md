@@ -144,8 +144,33 @@ Then open **`http://<your-host>:8099`**.
 - **`security_opt: apparmor=unconfined`** on the `altserver` and `altserver-web` services. Docker's
   default AppArmor profile contains no `dbus` rules at all, and AppArmor denies a mediated class it
   does not mention — so the very first call a Bonjour client makes is refused, mDNS silently fails,
-  and the server is invisible to your phone. [`deploy/apparmor/`](deploy/apparmor/) ships a
-  narrower profile you can install on the host instead; see its README comments.
+  and the server is invisible to your phone. This is why the default is `unconfined` rather than
+  carelessness.
+
+  **Optional, and better:** [`deploy/apparmor/altserver-mdns`](deploy/apparmor/) is
+  `docker-default` plus only the two D-Bus rules Bonjour needs — the bus handshake and
+  `org.freedesktop.Avahi`. The container still cannot reach systemd, NetworkManager, or anything
+  else on the bus. To switch, **in this order**:
+
+  ```bash
+  sudo bash deploy/apparmor/install.sh
+  ```
+
+  then set `ALTSERVER_APPARMOR=altserver-mdns` in the stack environment and redeploy. Order
+  matters: a container requesting a profile the host kernel has not loaded **fails to start**. The
+  script verifies the profile actually loaded before telling you to continue.
+
+  Afterwards, check it took — and check from **another machine**, because a too-tight profile
+  breaks mDNS silently, which is the exact failure the profile exists to fix:
+
+  ```bash
+  docker exec altserver cat /proc/self/attr/current   # expect: altserver-mdns (enforce)
+  avahi-browse -rt _altserver._tcp                    # on macOS: dns-sd -B _altserver._tcp
+  ```
+
+  Expect `ptrace` denials in `dmesg` afterwards. Those are the profile working: the web UI runs
+  with `pid: host`, so its process check walks every process on the box and is correctly refused
+  on the ones it has no business reading.
 - **`network_mode: host`** on netmuxd and the web UI. netmuxd has to see mDNS on UDP 5353.
 
 #### The anisette trap, if you deploy anisette separately
@@ -523,8 +548,8 @@ overwrites hand edits on its next pull:
 
 | Variable | Where | Set it when |
 |---|---|---|
-| `BUILDER_NAMESPACE` | Settings → Secrets and variables → Actions | you have run **Build buildenv Docker** to publish your own toolchain. Until then the default set is public and works |
-| `ALTSERVER_APPARMOR` | Portainer stack environment | you have run `sudo bash deploy/apparmor/install.sh` on the host |
+| `BUILDER_NAMESPACE` = your GitHub account, lowercased | Settings → Secrets and variables → Actions | you have run **Build buildenv Docker** to publish your own toolchain. Until then the default set is public and works |
+| `ALTSERVER_APPARMOR` = `altserver-mdns` | Portainer stack environment | you want the confined profile — see [Two settings that are load-bearing](#two-settings-that-are-load-bearing) in Setup, which applies whether you fork or not |
 
 `platforms: linux/amd64` in `build_image.yml` is hardcoded deliberately. Stage one pulls an
 **architecture-specific** toolchain, so a plain multi-arch `platforms:` list would run the amd64
@@ -556,7 +581,7 @@ exactly why it surprises.
 
 ### Getting all four architectures
 
-**Actions → Build AltServer → Run workflow**, tick **"Build every architecture, not just amd64"**.
+**Actions → Build AltServer → Run workflow**, tick **"Build every architecture, not just amd64"** (the `all_arches` input).
 Nothing is published; the binaries appear as artifacts on that run. Best for a one-off.
 
 **Or push a tag**, which builds all four *and* publishes them as a GitHub Release. Any tag name
