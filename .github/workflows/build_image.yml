@@ -78,7 +78,16 @@ jobs:
           context: .
           file: ./docker/Dockerfile
           build-args: |
-            BUILDER=ghcr.io/ben-diehlci/altserver_builder_alpine_amd64
+            # Namespace comes from the repository variable BUILDER_NAMESPACE when set, so a
+            # fork that has published its own toolchain (Actions -> Build buildenv Docker) can
+            # switch by adding one variable under Settings -> Secrets and variables -> Actions,
+            # with no edit to this file. The default keeps working for anyone who has not: those
+            # images are public.
+            #
+            # Not derived from github.repository_owner like the image name above, deliberately --
+            # that would point every fresh fork at toolchain images it has never built, and the
+            # build would fail on the pull rather than fall back.
+            BUILDER=ghcr.io/${{ vars.BUILDER_NAMESPACE || 'ben-diehlci' }}/altserver_builder_alpine_amd64
           platforms: linux/amd64
           push: true
           tags: |

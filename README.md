@@ -447,6 +447,25 @@ Three ways to get the full set:
 The **container image** is a separate matter: `build_image.yml` publishes `linux/amd64` only. An
 arm64 host builds it locally — see the note above.
 
+### If you fork this
+
+Most of it follows you without edits. The published image name is derived from
+`github.repository_owner`, so your images go to your namespace automatically.
+
+Two knobs, both set as repository variables rather than file edits — **Settings → Secrets and
+variables → Actions → Variables**:
+
+| Variable | Effect | When you need it |
+|---|---|---|
+| `BUILDER_NAMESPACE` | Which toolchain images the build pulls | After running **Build buildenv Docker** to publish your own. Until then the default set is public and works |
+| `ALTSERVER_APPARMOR` | Which AppArmor profile the stack requests (this one goes in Portainer's stack environment, not Actions) | After `sudo bash deploy/apparmor/install.sh` on the host |
+
+`platforms: linux/amd64` is deliberately hardcoded. The build stage pulls an **architecture-specific**
+Alpine toolchain, so a plain multi-arch `platforms:` list would run the amd64 toolchain under
+emulation and still emit an amd64 binary — an image that is mislabelled rather than merely slow.
+Multi-arch needs a per-architecture `BUILDER` arg, which is what the four-way matrix in
+`build.yml` does for the static binaries.
+
 ---
 
 ## Advanced: building from source
