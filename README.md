@@ -393,6 +393,33 @@ your phone.
 netmuxd publishes no build for TARGETARCH=arm
 ```
 
+### Find your device
+
+Not sure which you are? On the host:
+
+```bash
+uname -m                 # x86_64 | aarch64 | armv7l | i686
+lscpu | grep -i 64       # on a 32-bit OS, tells you if the CPU could do better
+```
+
+| Device | Reports as | Path |
+|---|---|---|
+| x86 server, NAS, mini PC, VM | `x86_64` | **A** |
+| Raspberry Pi 5 | `aarch64` | **B** |
+| Raspberry Pi 4 — 64-bit OS | `aarch64` | **B** |
+| Raspberry Pi 4 — 32-bit OS | `armv7l` | **B** after reinstalling 64-bit, see below |
+| Raspberry Pi 3 / 3B+ / Zero 2 W — 64-bit OS | `aarch64` | **B** |
+| Raspberry Pi 3 / 3B+ / Zero 2 W — 32-bit OS | `armv7l` | **B** after reinstalling 64-bit, see below |
+| Raspberry Pi 2 | `armv7l` | **C** — 32-bit only, no 64-bit option |
+| **Raspberry Pi 1, Zero, Zero W** | `armv6l` | **Not supported.** ARMv6; the armv7 binary will not run |
+| Apple silicon Mac VM (UTM, Parallels, Lima) | `aarch64` | **B** |
+| Older ARM NAS — some Synology, QNAP, Odroid, Orange Pi | usually `armv7l` | **C** |
+| Old 32-bit x86 thin client or netbook | `i686` | **C** |
+
+The Pi Zero and Zero W are the trap in that list: they look like the obvious tiny always-on machine
+for this, but their ARM1176 core is **ARMv6**, and an armv7 binary will fail with an illegal
+instruction. The **Zero 2 W** is a different chip entirely (Cortex-A53) and works fine — prefer it.
+
 > **If you are on armv7, check whether you actually need to be.** Raspberry Pi OS shipped 32-bit by
 > default until 2022, so a Pi 3, 4 or Zero 2 W installed a few years ago reports as `armv7` even
 > though the CPU is 64-bit capable. `uname -m` says `armv7l`; `lscpu | grep -i 64` will tell you
@@ -400,8 +427,7 @@ netmuxd publishes no build for TARGETARCH=arm
 > **Path B** and gets you the container stack and wireless refresh. That is almost always less work
 > than building netmuxd from source.
 
-Genuinely 32-bit-only hardware — Pi 2, older Odroid or Orange Pi boards, some older ARM NAS units —
-takes the cabled route below.
+Genuinely 32-bit-only hardware takes the cabled route, Path C.
 
 ---
 
