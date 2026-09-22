@@ -244,9 +244,13 @@ unexpectedly, that is why — not the server.
 
 ```bash
 sudo tar czf ~/lockdown-backup.tgz /var/lib/lockdown/
-docker run --rm -v <stack>_anisette-config:/data -v ~:/backup \
+docker run --rm -v STACK_anisette-config:/data -v ~:/backup \
   alpine tar czf /backup/anisette-state.tgz /data
 ```
+
+Replace `STACK` with your stack's name — `docker volume ls | grep anisette` shows the real one.
+Angle-bracket placeholders are avoided in these blocks on purpose: bash reads `<` and `>` as
+redirections, so a pasted `<stack>` silently creates files instead of failing.
 
 `adi.pb` is rewritten on every request, so stop the container first if you want a clean copy.
 Restoring that tarball is the **only** disaster-recovery path for the anisette identity; without it
@@ -394,21 +398,50 @@ Three ways to get the full set:
    amd64"**. Nothing is published; the binaries appear as artifacts on that run. Best for a one-off.
 
 2. **Push a tag.** Builds all four *and* publishes them as a GitHub Release, which is what you want
-   if others will download them:
+   if others will download them. Any tag name triggers it — the workflow matches `refs/tags/*` —
+   and the release takes the tag's name, so follow the existing `vMAJOR.MINOR.PATCH` convention:
 
    ```bash
-   git tag v1.0.0 && git push origin v1.0.0
+   git tag v1.0.0
+   git push origin v1.0.0
    ```
+
+   > **Push tags one at a time. Never `git push --tags`.** This repo inherited eight tags from
+   > upstream (`v0.0.1` through `v0.0.5` and some `-rc` variants) that are *not* published here.
+   > `--tags` would push all of them, and every one would start its own four-architecture build and
+   > publish its own release. `git tag -l` shows what you are carrying.
+
+   To see what exists, locally and published:
+
+   ```bash
+   git tag -l                        # local, including the inherited ones
+   git ls-remote --tags origin       # what is actually published
+   ```
+
+   To move or remove a tag you got wrong — delete it in both places, then re-tag:
+
+   ```bash
+   git tag -d v1.0.0                 # local
+   git push origin :refs/tags/v1.0.0 # remote
+   git tag v1.0.0 COMMIT_SHA        # substitute a real sha -- an angle-bracket
+   git push origin v1.0.0           # placeholder would be read by bash as a redirect
+   ```
+
+   Deleting the tag does **not** delete the GitHub Release it created; that has to be removed from
+   the Releases page separately, or the next push of the same tag attaches to the old one. And
+   anyone who already fetched the tag keeps their copy pointing at the old commit — which is why
+   moving a published tag is worth avoiding rather than merely fixing.
 
 3. **Build locally** for one architecture, using the matching toolchain image:
 
    ```bash
    docker run --rm -v "$PWD":/workdir -w /workdir \
-     ghcr.io/<owner>/altserver_builder_alpine_aarch64 \
+     ghcr.io/OWNER/altserver_builder_alpine_aarch64 \
      bash -c 'mkdir -p build; cd build; make -f ../Makefile -j"$(nproc)"'
    ```
 
-   Substitute `_amd64`, `_armv7` or `_i386` for a different target. On a host of a different
+   Substitute your GitHub account for `OWNER`, and `_amd64`, `_armv7` or `_i386` for a
+   different target. On a host of a different
    architecture this runs under emulation and is slow, but it works.
 
 The **container image** is a separate matter: `build_image.yml` publishes `linux/amd64` only. An
