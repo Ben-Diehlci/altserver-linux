@@ -371,23 +371,37 @@ Two questions decide everything: **what architecture is your host**, and **are y
 
 ### Which platforms work
 
-| Host | Container stack | Static binary | Wireless refresh |
+| Host | Container stack | Static binary | Refresh |
 |---|---|---|---|
-| **amd64** (x86_64) — most servers, NAS, VMs | pull the published image | yes | yes |
-| **arm64** (aarch64) — Raspberry Pi 4/5, Apple silicon VMs | build locally, one command | yes | yes |
-| **armv7** — older 32-bit Pi | no | yes | **no** — see below |
-| **i386** — legacy 32-bit x86 | no | yes | **no** — see below |
+| **amd64** (x86_64) — most servers, NAS, VMs | pull the published image | yes | over Wi-Fi |
+| **arm64** (aarch64) — Raspberry Pi 4/5, Apple silicon VMs | build locally, one command | yes | over Wi-Fi |
+| **armv7** — 32-bit ARM | not supported | yes | over a cable |
+| **i386** — legacy 32-bit x86 | not supported | yes | over a cable |
 
-The limit on the bottom two is not this project: **netmuxd publishes releases only for x86_64 and
-aarch64**, and netmuxd is what makes refresh work without a cable. The Dockerfile refuses to build
-for those architectures rather than producing an image that looks fine and cannot reach your phone:
+The bottom two are not broken, they just need the cable left plugged in. Refreshing over USB works
+the same way it always has — the host's `usbmuxd` gives AltServer the device, which is exactly what
+netmuxd replaces for the cable-free case. A small always-on machine with the phone permanently
+attached is a perfectly good deployment, and arguably a good use for hardware too slow for much
+else.
+
+What they cannot do is refresh *wirelessly*, because **netmuxd publishes releases only for x86_64
+and aarch64**. That is also why the container stack is not offered there: the image treats netmuxd
+as required and refuses to build rather than produce something that looks fine and cannot reach
+your phone.
 
 ```
 netmuxd publishes no build for TARGETARCH=arm
 ```
 
-On armv7 or i386 you can still run the static binary and install over USB, and wireless refresh
-becomes possible only if you build netmuxd from source (it is Rust) for that target.
+> **If you are on armv7, check whether you actually need to be.** Raspberry Pi OS shipped 32-bit by
+> default until 2022, so a Pi 3, 4 or Zero 2 W installed a few years ago reports as `armv7` even
+> though the CPU is 64-bit capable. `uname -m` says `armv7l`; `lscpu | grep -i 64` will tell you
+> whether the hardware could do better. Reinstalling with 64-bit Raspberry Pi OS moves you to
+> **Path B** and gets you the container stack and wireless refresh. That is almost always less work
+> than building netmuxd from source.
+
+Genuinely 32-bit-only hardware — Pi 2, older Odroid or Orange Pi boards, some older ARM NAS units —
+takes the cabled route below.
 
 ---
 
@@ -460,7 +474,12 @@ docker run --rm -v "$PWD":/workdir -w /workdir \
   bash -c 'mkdir -p build; cd build; make -f ../Makefile -j"$(nproc)"'
 ```
 
-Swap `_i386` for the other. USB install works; wireless refresh needs a netmuxd you build yourself.
+Swap `_i386` for the other.
+
+Leave the phone connected and refreshing works normally through the host's `usbmuxd` — you are
+trading the convenience of a cable-free setup, not the function. If you later want wireless, it
+needs a netmuxd built from source (it is Rust) for that target, or a move to 64-bit per the note
+above.
 
 ---
 
