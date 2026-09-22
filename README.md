@@ -447,6 +447,63 @@ Three ways to get the full set:
 The **container image** is a separate matter: `build_image.yml` publishes `linux/amd64` only. An
 arm64 host builds it locally — see the note above.
 
+### Running on a Raspberry Pi (or any arm64 host)
+
+You do **not** need to fork. The only thing that does not work out of the box is the published
+container image, which is `linux/amd64`. Everything else is the same as Setup.
+
+**How the pieces fit**, since this is worth understanding before changing it: the image is built in
+two stages. The first stage runs inside a prebuilt *toolchain* image that already contains
+corecrypto, cpprestsdk, boost and libzip — the things that are slow and awkward to build — and
+compiles AltServer inside it. The second stage copies just the finished binary into a small Debian
+runtime. So building on a Pi means pointing stage one at the **arm64 toolchain**, which is already
+published, rather than compiling those dependencies yourself.
+
+Clone, build the image locally, and deploy the stack against it:
+
+```bash
+git clone --recursive https://github.com/Ben-Diehlci/altserver-linux.git
+cd altserver-linux
+docker build -f docker/Dockerfile \
+  --build-arg BUILDER=ghcr.io/ben-diehlci/altserver_builder_alpine_aarch64 \
+  --build-arg TARGETARCH=arm64 \
+  -t ghcr.io/ben-diehlci/altserver-linux:latest .
+```
+
+Tagging it with the name the stack already expects means `deploy/altserver-stack.yml` needs no
+edit — Docker finds the local image and does not pull.
+
+> **If you deploy through Portainer, prefer the `build:` block instead.** Ticking "re-pull image"
+> on a stack update does exactly what it says: it fetches the amd64 image from the registry and
+> throws your local arm64 build away, and the containers then fail with an exec-format error. The
+> same-name trick is fine for plain `docker compose`, where nothing re-pulls behind you.
+
+To have compose build it, uncomment the `build:` block in `deploy/altserver-stack.yml` and set
+these two in the stack environment:
+
+```
+ALTSERVER_BUILD_ARCH=aarch64
+ALTSERVER_TARGETARCH=arm64
+```
+
+That way the image is rebuilt from source on every stack update rather than pulled, which is what
+you want on a platform the registry has no image for.
+
+Both `--build-arg`s matter and they are **not** the same value:
+
+| Arg | Value on arm64 | What it selects |
+|---|---|---|
+| `BUILDER` | `…_aarch64` | the toolchain image, named for the gcc triple |
+| `TARGETARCH` | `arm64` | which netmuxd release to download, named for Docker's platform |
+
+Set only the first and you get a correctly compiled arm64 AltServer that then downloads an
+**x86_64 netmuxd** and fails at startup with a rosetta or exec-format error. Modern Docker routes
+`docker build` through buildx, which sets `TARGETARCH` for you — but passing it explicitly costs
+nothing and does not depend on which builder your Pi has.
+
+Expect the build to take a while. It is native on the Pi rather than emulated, so it is not slow
+for the reason you might assume — it is slow because a Pi is a Pi.
+
 ### If you fork this
 
 Most of it follows you without edits. The published image name is derived from

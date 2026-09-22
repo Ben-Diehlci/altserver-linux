@@ -142,7 +142,15 @@ services:
     #   context: ..
     #   dockerfile: docker/Dockerfile
     #   args:
-    #     BUILDER: ghcr.io/ben-diehlci/altserver_builder_alpine_amd64
+    #     # Defaults build for x86_64. On a Raspberry Pi or other arm64 host, set BOTH of these
+    #     # in the stack environment before deploying:
+    #     #     ALTSERVER_BUILD_ARCH=aarch64
+    #     #     ALTSERVER_TARGETARCH=arm64
+    #     # Two variables because the two names genuinely differ: the toolchain image is named for
+    #     # the gcc triple (aarch64) and TARGETARCH uses Docker's platform name (arm64). Getting
+    #     # only the first right builds a correct binary and then downloads an x86_64 netmuxd.
+    #     BUILDER: ghcr.io/ben-diehlci/altserver_builder_alpine_${ALTSERVER_BUILD_ARCH:-amd64}
+    #     TARGETARCH: ${ALTSERVER_TARGETARCH:-amd64}
     container_name: altserver
     restart: unless-stopped
     depends_on:
