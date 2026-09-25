@@ -95,6 +95,14 @@ jobs:
       - name: Tracked text files are pure ASCII
         run: python3 tests/check_ascii_punctuation.py
 
+      # avahi-daemon restarted on the deployment host and the advertisement never came back. The
+      # server was undiscoverable for three days while every other signal stayed green, because
+      # avahi-compat's event loop is parked after a single poll and the failure callback can never
+      # fire. The advertisement is now re-checked by browsing for it; this exercises that loop
+      # against a fake avahi, since CI has no daemon to restart.
+      - name: The mDNS advertisement re-registers when it disappears
+        run: python3 tests/check_mdns_watchdog.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"

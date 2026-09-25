@@ -112,6 +112,7 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | *(this)* | **Two CI guards added** (`tests/`), each verified to fail by reintroducing the original bug. |
 | *(this)* | **netmuxd added to the image and the stack** - wireless device transport, the last missing piece for unattended refresh. |
 | *(this)* | **Repo is pure ASCII.** 264 non-keyboard characters replaced; `check_ascii_punctuation.py` guards it. Two silent traps documented below. |
+| *(this)* | **mDNS advertisement self-heals.** avahi restarted 09-22 and the advert never came back: three-day silent outage. The helper now browses for its own record and re-registers. Guarded by `check_mdns_watchdog.py` (8 cases, 8 mutants). |
 
 ### CONFIRMED 2026-09-14: the Apple GSA client-info block is real
 
@@ -983,14 +984,20 @@ Ranked. These are the ways it stops refreshing with nobody finding out.
    evidence anywhere. This is why the Shortcuts intent path
    (`RefreshAllAppsIntent.swift:187`, `ignoresServerNotFoundError = false`) is a requirement.
 2. **`DNSServiceRegister result: 0` is not proof of publication.** A user in `closed_issue_0051`
-   got result 0 with avahi-daemon *stopped* - consistent with avahi-compat deferring via
-   `AVAHI_CLIENT_NO_FAIL`. **Our committed fix (`04e928a`) does not close this**: it catches a
-   child that exits, and the `sys.exit` addition catches a non-zero result, but it cannot catch
-   avahi *lying* about success. Only an out-of-band `avahi-browse` from another host can.
-3. **avahi restarts and nothing re-registers.** `StartAdvertising` is called exactly once
+   got result 0 with avahi-daemon *stopped*. **The `AVAHI_CLIENT_NO_FAIL` explanation previously
+   given here was wrong** - avahi-compat calls `avahi_client_new` with flags `0`, not
+   `AVAHI_CLIENT_NO_FAIL`. The real reason is narrower and worse: a 0 return means only that the
+   daemon ACCEPTED the commit, never that the name survived probing. `04e928a` could not close
+   this - it catches a child that exits and a non-zero result, but not avahi lying about success.
+   **The watchdog added 2026-09-25 does close it**, within two intervals, because it browses for
+   the record instead of trusting the return value.
+3. **avahi restarts and nothing re-registers.** **THIS HAPPENED. 2026-09-22, three-day outage -
+   see the dated section below.** It was written down here as a prediction before it occurred,
+   which is the argument for writing these down. `StartAdvertising` is called exactly once
    (`ConnectionManager.cpp:174`). No retry, no health check, and nothing calls
-   `DNSServiceProcessResult`, so the registration callback never fires either way. An
-   unattended-upgrades run touching avahi overnight is a multi-day silent outage.
+   `DNSServiceProcessResult`, so the registration callback never fires either way. **FIXED
+   2026-09-25** by the watchdog in `dnssd_loader.cpp`, guarded by
+   `tests/check_mdns_watchdog.py`.
 4. **A stale python3 child can advertise a dead port.** `PR_SET_PDEATHSIG` fires when the
    *forking thread* exits, not the process, and the fork happens on the listening thread. The
    child can survive holding a registration for an ephemeral port that no longer exists; since
@@ -1170,6 +1177,97 @@ Method note worth keeping: the substitution was proved content-neutral by applyi
 character map to the `HEAD` text and diffing it against the working tree, which came out
 byte-identical for all seven files. That is a stronger check than reading the diff, which for
 218 changed lines is unreadable.
+
+### CONFIRMED 2026-09-25: avahi restarted, the advertisement died, and nothing could have noticed
+
+Silent failure mode 3 above, in production, for three days. Predicted in this file before it
+happened.
+
+**Timeline, from the host's own journal.** Host booted 09-14 15:23. The `altserver` container
+started 09-16 00:34 and registered `_altserver._tcp` on port 37497. avahi-daemon restarted
+**09-22 06:48:02** ("Server startup complete", re-registering every address from scratch), which
+dropped every registration on the box. Nothing re-created AltServer's. Found 09-25 when a human
+opened the status page. No package upgrade was involved: `dpkg.log` shows the avahi packages last
+touched 09-14, so the restart had another trigger - likely Docker interface churn, since avahi on
+that host tracks ~25 veth and bridge interfaces.
+
+**The diagnostic that settles this class of bug in one command.** `docker exec altserver ps -ef`
+showed the python3 helper STILL ALIVE, started Sep16, parked on `Event().wait()`, holding a handle
+to a service that had not existed for three days. Every other check was green: anisette OK, clock
+OK, phone reachable over Wi-Fi via netmuxd OK, AltServer process running. Only browsing for the
+record showed anything wrong.
+
+**Why no in-process signal could ever have caught it.** Four vendor facts, none rediscoverable
+from this repo:
+
+1. **avahi-compat's worker thread is a command-driven one-shot, not a poll loop.** `sdref_new`
+   queues exactly ONE `COMMAND_POLL`; `thread_func` reads it, calls `avahi_simple_poll_run`,
+   writes `COMMAND_POLL_DONE`, and blocks on `read_command` forever. `avahi_simple_poll_run`
+   performs the `poll()` syscall and dispatches NOTHING - callbacks are invoked only by
+   `avahi_simple_poll_dispatch`, and the only caller of that, and the only writer of a further
+   `COMMAND_POLL`, is `DNSServiceProcessResult()`.
+2. **Nothing in this project calls `DNSServiceProcessResult`.** Zero call sites; the only
+   mentions are comments in `dns_sd.h`. So the compat event loop is parked permanently after the
+   first poll. The client never transitions to `AVAHI_CLIENT_FAILURE` and avahi's
+   `NameOwnerChanged` signal sits unread in the D-Bus socket buffer indefinitely.
+3. **The fd that would drive that loop is a sentinel.** `DNSServiceRefSockFD` is overridden in
+   `dnssd_loader.cpp` to return the literal `0xDEADBEEF`. `ConnectionManager.cpp:129` stores it,
+   its only accessor has no callers, and nothing ever selects on it.
+4. **A failed client never reconnects.** compat passes flags `0`, so once the client reaches
+   FAILURE it is permanently dead - re-registering requires building a NEW client, which is what
+   the watchdog does.
+
+Together: the helper cannot detect the loss, cannot report it, and cannot recover from it.
+**Liveness is therefore not a health signal here** - the process stays alive and healthy-looking
+with a dead registration, so any watchdog keyed to "is the child running" would have reported
+green for the full three days.
+
+**Why nothing else caught it either.** `/api/status` returns HTTP 200 when `overall` is `"fail"`,
+and `status_checks.py` exits 0 when checks fail, so anything monitoring by status code or exit
+code saw green throughout. There are no healthchecks in the stack, and `restart: unless-stopped`
+can never fire because AltServer never exits. Nothing runs the checks at all except a browser
+hitting the page. None of this is fixed yet; it is recorded as the remaining detection gap.
+
+**The fix.** `libraries/dnssd_loader/dnssd_loader.cpp` - the helper now browses for its own record
+every `ALTSERVER_MDNS_RECHECK_SECONDS` (default 60, `0` disables) and re-registers when it is
+gone. Three rules that are easy to get wrong and invisible when wrong:
+
+  * **Match on port plus the `serverID` TXT value, never the service name.** `flags` is 0, so on a
+    name collision avahi RENAMES to "AltServer #2" rather than withdrawing. A name-based check
+    would see its own healthy record as missing and re-register forever. The guard's `renamed`
+    case pins this: with name matching it produces 3 registrations and 2 deallocations where it
+    should produce 1 and 0.
+  * **A failed browse is UNKNOWN, not absent.** Re-registering because `avahi-browse` timed out
+    would turn a blip into a self-inflicted outage.
+  * **Two consecutive misses before acting**, deallocating first, so one false negative costs a
+    sub-second gap rather than a duplicate record.
+  * **The `serverID` TXT value is part of the match, not decoration.** Ports are ephemeral and
+    handed out per process, so a second AltServer anywhere on the LAN can land on the same one.
+    Matching port alone would read a stranger's advertisement as proof our own is healthy. The
+    guard's `foreign_server` case pins this; it was found by mutation testing, not by design.
+
+**The watchdog also has to not fail silently itself.** If `avahi-browse` cannot run, every check
+returns UNKNOWN, the loop correctly refuses to act, and the result is a watchdog that is loaded,
+running, and completely blind - the same silent failure one level up. So it probes once at
+startup and says loudly if it cannot verify anything, and warns again after 5 and 50 consecutive
+unreadable checks. Both are asserted by the guard, because a warning nobody emits is not a
+warning.
+
+Two latent bugs were fixed in passing, both exposed by the fix rather than by the incident:
+`sdRef` was declared `c_int` while `DNSServiceRef` is a pointer, so on any 64-bit build the daemon
+wrote 8 bytes into 4 and the stored handle was truncated - harmless only while nothing used the
+handle, which the watchdog now does; and the TXT record was hexed through a SIGNED `char`, which
+sign-extends any byte >= 0x80 into `\xFFFFFF80`. Only ASCII `serverID=` is sent today, so it had
+never bitten.
+
+The helper also moved from an interpolated one-liner to a raw string literal taking its parameters
+as **argv**, which is what lets `tests/check_mdns_watchdog.py` execute the shipped text verbatim
+against a fake avahi. Before this, a syntax error in the helper was discoverable only on a live
+host, where the parent reports it as the generic "the python3 helper exited immediately".
+
+**Still not covered:** the helper being *killed*. The parent stops looking after ~1 second, and
+`PR_SET_PDEATHSIG` fires when the forking THREAD exits, not the process (mode 4 above). The status
+page shows it; nothing self-heals it.
 
 ## Repository audit, 2026-09-15
 

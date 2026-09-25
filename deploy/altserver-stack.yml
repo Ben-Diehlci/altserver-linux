@@ -218,6 +218,17 @@ services:
       # no hardcoded URL to go stale. Set to 1 to leave the file alone (e.g. to pin a build).
       ALTSTORE_SKIP_FETCH: "0"
 
+      # How often the advertisement helper re-checks that _altserver._tcp is still published, and
+      # re-registers if it is not. Set to 0 to disable the watchdog entirely.
+      #
+      # This is not a nicety. On 2026-09-22 avahi-daemon restarted on the deployment host, every
+      # registration on the box was dropped, and nothing re-created AltServer's. The server was
+      # undiscoverable for three days with every other health signal green -- AltStore simply
+      # could not find it. AltServer cannot detect this itself: avahi-compat's event loop is
+      # parked after one poll and its failure callback can never fire, so the only honest test is
+      # to browse for the record from outside, which is what this interval drives.
+      ALTSERVER_MDNS_RECHECK_SECONDS: "60"
+
       # Credentials. Prefer putting these in Portainer's stack environment variables rather than
       # committing them. They are only needed for sign-in; see README.md, Setup step 4.
       # Passing them here beats -p on a command line, which exposes the password in `ps`.
