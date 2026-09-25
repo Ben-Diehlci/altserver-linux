@@ -26,6 +26,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -46,6 +47,37 @@ ANISETTE_REQUIRED_KEYS = [
 ]
 
 OK, WARN, FAIL, UNKNOWN = "ok", "warn", "fail", "unknown"
+
+# Machine-readable verdicts, so something other than a human looking at the page can tell this is
+# broken.
+#
+# WHY. On 2026-09-22 the mDNS advertisement was dropped and the server went undiscoverable for at
+# least three days. This file reported the failure correctly the entire time -- and nothing heard
+# it, because `python3 status_checks.py` exited 0 whatever it found and /api/status answered 200
+# whatever it found. Following the obvious monitoring advice would have shown green throughout an
+# outage in which nothing refreshed.
+#
+# Exit codes are the Nagios plugin convention (0 OK, 1 WARNING, 2 CRITICAL), which Nagios, Icinga
+# and anything that shells out to a check script already understand.
+EXIT_CODES = {OK: 0, WARN: 1, UNKNOWN: 1, FAIL: 2}
+
+# HTTP has only two useful answers for a health endpoint, so WARN deliberately stays 200: degraded
+# is not down, and UNKNOWN collapses into WARN whenever a tool is merely absent. The consequence
+# is worth stating plainly rather than discovering later: A MONITOR WATCHING ONLY THE STATUS CODE
+# CANNOT SEE A WARN. That includes the case where the mDNS check cannot run at all, which looks
+# identical to health over HTTP alone. Anything that needs to distinguish must read `overall` from
+# the body, or use the exit code.
+HTTP_CODES = {OK: 200, WARN: 200, UNKNOWN: 200, FAIL: 503}
+
+
+def exit_code(overall):
+    """Process exit status for an `overall` verdict. Unknown verdicts are a WARNING, not an OK."""
+    return EXIT_CODES.get(overall, 1)
+
+
+def http_status(overall):
+    """HTTP status for an `overall` verdict. Only FAIL is not-200; see HTTP_CODES above."""
+    return HTTP_CODES.get(overall, 200)
 
 
 def _in_container():
@@ -377,4 +409,8 @@ def run_all(anisette_url=None):
 
 
 if __name__ == "__main__":
-    print(json.dumps(run_all(), indent=2))
+    # Exits non-zero when something is wrong, so this is usable from cron or a monitoring agent
+    # without parsing the JSON. See EXIT_CODES.
+    _result = run_all()
+    print(json.dumps(_result, indent=2))
+    sys.exit(exit_code(_result["overall"]))

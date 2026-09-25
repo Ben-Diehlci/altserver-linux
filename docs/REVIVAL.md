@@ -113,6 +113,7 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | *(this)* | **netmuxd added to the image and the stack** - wireless device transport, the last missing piece for unattended refresh. |
 | *(this)* | **Repo is pure ASCII.** 264 non-keyboard characters replaced; `check_ascii_punctuation.py` guards it. Two silent traps documented below. |
 | *(this)* | **mDNS advertisement self-heals.** avahi restarted 09-22 and the advert never came back: three-day silent outage. The helper now browses for its own record and re-registers. Guarded by `check_mdns_watchdog.py` (8 cases, 8 mutants). |
+| *(this)* | **Failures are visible to machines.** `/api/status` was 200 and `status_checks.py` exited 0 no matter what they found, so every monitor saw green through the outage. Now 503 and Nagios exit codes, guarded end-to-end by `check_status_signals.py`. |
 
 ### CONFIRMED 2026-09-14: the Apple GSA client-info block is real
 
@@ -1222,11 +1223,31 @@ Together: the helper cannot detect the loss, cannot report it, and cannot recove
 with a dead registration, so any watchdog keyed to "is the child running" would have reported
 green for the full three days.
 
-**Why nothing else caught it either.** `/api/status` returns HTTP 200 when `overall` is `"fail"`,
-and `status_checks.py` exits 0 when checks fail, so anything monitoring by status code or exit
-code saw green throughout. There are no healthchecks in the stack, and `restart: unless-stopped`
-can never fire because AltServer never exits. Nothing runs the checks at all except a browser
-hitting the page. None of this is fixed yet; it is recorded as the remaining detection gap.
+**Why nothing else caught it either. FIXED 2026-09-25.** `/api/status` returned HTTP 200 when
+`overall` was `"fail"`, and `status_checks.py` exited 0 when checks failed, so anything monitoring
+by status code or exit code saw green throughout. This was the worse half of the incident: the
+checks were RIGHT the entire time and both machine-readable channels threw the answer away.
+Following the README's own advice to "have something poll it" would have shown green through a
+total outage, which is worse than no monitoring, because it answers "is it up?" with a confident
+yes.
+
+Now `/api/status` returns **503** on fail and `status_checks.py` exits with Nagios plugin codes
+(0 OK, 1 WARNING, 2 CRITICAL). Guarded by `tests/check_status_signals.py`, which drives the real
+handler and runs the real script rather than testing the mapping functions -- a correct mapping
+that no caller uses is the identical bug, and that is exactly what the original was:
+`status_checks.py` computed `overall` perfectly and discarded it one line later.
+
+The coupling worth remembering: the page's own `fetch()` must NOT gate on `response.ok`, or a 503
+would blank the dashboard during precisely the outage it exists to describe. That is asserted, and
+the rendered page was checked in a browser against a real 503 rather than reasoned about.
+
+**Deliberately NOT changed:** WARN stays HTTP 200, so a monitor watching only the status code
+cannot see a degraded result -- including the case where the mDNS check cannot run at all. Use
+the exit code or read `overall` from the body if that distinction matters.
+
+**Still open:** there are no healthchecks in the stack, and `restart: unless-stopped` can never
+fire because AltServer never exits. Nothing runs the checks periodically except a browser hitting
+the page, so the fixes above only help once something is actually polling.
 
 **The fix.** `libraries/dnssd_loader/dnssd_loader.cpp` - the helper now browses for its own record
 every `ALTSERVER_MDNS_RECHECK_SECONDS` (default 60, `0` disables) and re-registers when it is

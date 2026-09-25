@@ -103,6 +103,13 @@ jobs:
       - name: The mDNS advertisement re-registers when it disappears
         run: python3 tests/check_mdns_watchdog.py
 
+      # The same outage was detected correctly by status_checks.py and reported to nobody:
+      # /api/status answered 200 whatever it found and the script exited 0 whatever it found, so
+      # any monitor built on either saw green through a total outage. Drives the real handler and
+      # runs the real script, because a correct mapping no caller uses is the same bug again.
+      - name: Failures are visible over HTTP and as an exit code
+        run: python3 tests/check_status_signals.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"

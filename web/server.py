@@ -472,7 +472,11 @@ class Handler(BaseHTTPRequestHandler):
                 data = {"overall": "fail", "host": "", "checks": [{
                     "name": "Status service", "state": "fail",
                     "summary": "A check raised an exception", "detail": str(exc), "fix": ""}]}
-            self._send(200, json.dumps(data), "application/json")
+            # 503 when overall is "fail", so an uptime monitor sees the outage. This used to be
+            # an unconditional 200, which is how a three-day total outage went unnoticed. The
+            # page's own fetch() does not check r.ok, so it still renders normally.
+            self._send(status_checks.http_status(data.get("overall")),
+                       json.dumps(data), "application/json")
         else:
             self._send(404, "not found\n", "text/plain; charset=utf-8")
 

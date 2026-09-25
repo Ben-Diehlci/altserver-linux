@@ -331,9 +331,25 @@ of a dead deployment is an app that will not open, a week later.
 ## Before trusting it unattended
 
 - **Watch it from outside.** Nothing inside AltServer reports its own health: no liveness signal,
-  no re-registration if avahi restarts, and `journalctl -p err` stays empty no matter what breaks.
-  A background refresh that finds no server notifies nobody on either end. The status page at `/`
-  exists for this; have something poll it.
+  and `journalctl -p err` stays empty no matter what breaks. A background refresh that finds no
+  server notifies nobody on either end. Point a monitor at it:
+
+  | Channel | Healthy | Broken |
+  |---|---|---|
+  | `GET /api/status` | `200` | **`503`** when any check fails |
+  | `python3 status_checks.py` | exits `0` | exits `2` (`1` = degraded) |
+
+  Exit codes follow the Nagios plugin convention, so a monitoring agent understands them as-is.
+  One caveat worth knowing: **a degraded result stays HTTP 200**, including the case where the
+  mDNS check cannot run at all. Over the status code alone that is indistinguishable from health,
+  so anything that needs to tell the difference must read `overall` from the body or use the exit
+  code.
+
+  This is not theoretical. On 2026-09-22 the mDNS advertisement was dropped and the server was
+  undiscoverable for at least three days -- possibly nine, since nothing recorded it working.
+  `status_checks.py` detected it correctly the whole time, but `/api/status` answered `200` and
+  the script exited `0`, so every machine-readable signal said healthy. Both are fixed; the
+  advertisement also re-registers itself now (see `ALTSERVER_MDNS_RECHECK_SECONDS`).
 - **Two checks that cannot tell you anything.** `docker exec altserver idevice_id -l` and the
   wireless row on the status page both use **Debian's** libimobiledevice from the image's apt
   packages, not the vendored copy AltServer links. They were green throughout a bug that broke
@@ -378,6 +394,8 @@ terminal, because the 2FA code is read from stdin.
 | `ALTSERVER_UDID` / `ALTSERVER_APPLE_ID` / `ALTSERVER_APPLE_PASSWORD` | Alternatives to `-u` / `-a` / `-p`. Prefer these: a password passed as `-p` is visible in `ps` to every user on the host |
 | `ALTSERVER_NO_CLIENTINFO_SANITIZE` | Set to `1` to stop rewriting `com.apple.dt.Xcode` in `X-MMe-Client-Info`. Diagnostic only - leave unset |
 | `ALTSTORE_SKIP_FETCH` | Set to `1` to stop the container refreshing `AltStore.ipa` on start |
+| `ALTSERVER_MDNS_RECHECK_SECONDS` | How often the server re-checks that its own mDNS advertisement is still published, re-registering if not. Default `60`. Set to `0` to disable. Leave it on: without it, an avahi restart makes the server permanently undiscoverable with no other symptom |
+| `ALTSERVER_APPARMOR` | Which AppArmor profile the containers request. Default `unconfined`. Set to `altserver-mdns` only AFTER running `sudo bash deploy/apparmor/install.sh` on the host - a container asking for an unloaded profile fails to start |
 
 There is deliberately **no default anisette server**. The one that used to be hardcoded has
 returned HTTP 502 since 2026-09, and pointing every user at a single shared anisette identity can
