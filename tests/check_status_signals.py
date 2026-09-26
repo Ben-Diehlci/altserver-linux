@@ -204,6 +204,84 @@ check(skewed["state"] == status_checks.FAIL,
       "a genuinely skewed clock still reports FAIL (got %r)" % skewed["state"])
 
 
+# ---- an inconclusive probe must never be reported as a definite negative --------------------
+# avahi-browse can be missing, time out, or RUN AND REFUSE (D-Bus denied, daemon down). Only the
+# first was handled; a non-zero exit fell through to the "found nothing" branch and was announced
+# as "_altserver._tcp is NOT published". That is a confident outage report from a probe that never
+# answered -- and it drives the HTTP 503 and the container healthcheck.
+_real_run_sc = status_checks._run
+
+def _browse_returns(rc, out):
+    status_checks._run = lambda cmd, **kw: (rc, out)
+    try:
+        return status_checks.check_advertisement(), status_checks.check_phone_advertisement()
+    finally:
+        status_checks._run = _real_run_sc
+
+for rc, out, label in [(1, "Failed to create client: Daemon not running", "avahi refused"),
+                       (None, "avahi-browse timed out after 15s", "browse timed out")]:
+    adv, phone = _browse_returns(rc, out)
+    check(adv["state"] == status_checks.UNKNOWN,
+          "%s reports UNKNOWN for the advertisement, not a false outage (got %r)"
+          % (label, adv["state"]))
+    check(phone["state"] == status_checks.UNKNOWN,
+          "%s reports UNKNOWN for the phone, not 'the phone is not advertising'" % label)
+    # Match the INSTRUCTION, not the word: the correct fix text says "avahi-browse is
+    # installed", which a bare substring search flags as install-advice.
+    check("install avahi-utils" not in adv["fix"].lower(),
+          "%s does not tell you to install a tool that is already installed" % label)
+
+adv, _ = _browse_returns(None, "avahi-browse is not installed")
+check("install" in adv["fix"].lower(),
+      "a genuinely missing avahi-browse DOES still say to install it")
+
+# An advertisement from ANOTHER host used to read as OK, so a second AltServer on the LAN -- or a
+# stale record from a machine that has gone -- made this green while this host published nothing.
+import socket as _socket  # noqa: E402
+_ROW = "=;eth0;IPv4;AltServer;_altserver._tcp;local;%s;192.168.5.16;48647;\"serverID=1\""
+_me = _socket.gethostname().split(".")[0]
+adv, _ = _browse_returns(0, _ROW % (_me + ".local"))
+check(adv["state"] == status_checks.OK, "our own advertisement still reads OK")
+adv, _ = _browse_returns(0, _ROW % "someone-elses-box.local")
+check(adv["state"] != status_checks.OK,
+      "a STRANGER's _altserver._tcp does not read as OK (got %r)" % adv["state"])
+check("not by this host" in adv["summary"].lower(),
+      "and it says whose it is (%r)" % adv["summary"])
+
+
+# ---- an HTTP error means the server ANSWERED -------------------------------------------------
+# Reporting it as "cannot reach ... is the container running? check docker ps" sends the owner to
+# a command that shows it UP, and invites a redeploy -- which anisette-stack.yml:47-58 documents
+# as destroying device.json and adi.pb, minting a new machine and demanding 2FA.
+import urllib.error as _ue  # noqa: E402
+_real_urlopen_sc = status_checks.urllib.request.urlopen
+
+
+def _anisette_with(exc_or_resp, polling):
+    def _f(*a, **k):
+        if isinstance(exc_or_resp, Exception):
+            raise exc_or_resp
+        return exc_or_resp
+    status_checks.urllib.request.urlopen = _f
+    try:
+        return status_checks.check_anisette("http://127.0.0.1:6969", polling=polling)
+    finally:
+        status_checks.urllib.request.urlopen = _real_urlopen_sc
+
+
+for polling in (True, False):
+    r = _anisette_with(_ue.HTTPError("u", 502, "Bad Gateway", {}, None), polling)
+    where = "polled" if polling else "full"
+    check("cannot reach" not in r["summary"].lower() and "nothing answered" not in r["summary"].lower(),
+          "%s: an HTTP 502 is not reported as unreachable (said %r)" % (where, r["summary"]))
+    check("502" in r["summary"],
+          "%s: the status code is shown (said %r)" % (where, r["summary"]))
+
+r = _anisette_with(OSError("Connection refused"), True)
+check("nothing answered" in r["summary"].lower() or "cannot reach" in r["summary"].lower(),
+      "a genuine transport failure IS still reported as unreachable (said %r)" % r["summary"])
+
+
 # ---- a check must not assert a CAUSE it has not established -----------------------------------
 # Found by the owner turning their phone's Wi-Fi off to test the new healthcheck. netmuxd keeps
 # listing a known device for a while after it disappears, so idevice_id still returned it,

@@ -148,9 +148,22 @@ def check_anisette(url=None, polling=False):
                         "when the status page is opened." % probe)
                 return _result("Anisette server", FAIL, "HTTP %s from %s" % (resp.status, probe),
                                "Reachable but unhealthy.", "Check the anisette container's logs.")
+        except urllib.error.HTTPError as exc:
+            # It ANSWERED. Saying "cannot reach" here and sending the owner to `docker ps` --
+            # which will show the container up -- invites the one action this deployment must
+            # not take casually: anisette-stack.yml:47-58 documents that a Portainer redeploy
+            # destroys device.json and adi.pb, mints a brand-new machine, and demands 2FA.
+            return _result("Anisette server", FAIL, "HTTP %s from %s" % (exc.code, probe),
+                           "The server answered, so it is running and listening; only this route "
+                           "failed. %s" % exc,
+                           "Do NOT redeploy the anisette stack to fix this -- that can destroy "
+                           "the machine identity. A 404 can mean a v1-only server with no "
+                           "/v3/client_info route; a 502/503 means something in front of anisette "
+                           "is up and anisette is not. Check `docker logs anisette`.")
         except Exception as exc:
-            return _result("Anisette server", FAIL, "Cannot reach %s" % probe, str(exc),
-                           "Is the anisette container running? Check `docker ps`.")
+            return _result("Anisette server", FAIL, "Nothing answered at %s" % probe, str(exc),
+                           "No listener on that port. Is the anisette container running? "
+                           "Check `docker ps`.")
 
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Xcode"})
@@ -180,9 +193,20 @@ def check_anisette(url=None, polling=False):
 
     missing = [k for k in ANISETTE_REQUIRED_KEYS if k not in data]
     if missing:
+        # Do NOT assert which cause. All that was established is that ten keys are absent from
+        # a 200. "Wrong kind of server" is one explanation; the likelier one on this deployment
+        # is the opposite -- this route is where anisette provisions against Apple, and a server
+        # whose machine identity is gone answers 200 with an error object instead of the fields.
+        # Telling the owner their server is the wrong type sends them to replace a working one
+        # while the real emergency is a lost identity. The BODY usually names the difference, so
+        # show it rather than only the key names we already knew.
         return _result("Anisette server", FAIL, "Missing %d required field(s)" % len(missing),
-                       ", ".join(missing),
-                       "This server does not speak the legacy v1 flat-JSON contract.")
+                       "Absent: %s. Server said: %s" % (", ".join(missing), body[:300]),
+                       "Two very different causes look like this. If the body names an error or "
+                       "mentions provisioning, the machine identity is missing or Apple refused "
+                       "it -- restore the anisette identity volume, and do NOT redeploy the "
+                       "stack first. If the body is a well-formed object with different key "
+                       "names, the server does not speak the legacy v1 flat-JSON contract.")
 
     # A numeric value here is the one failure the client swallows: X-Apple-I-MD-RINFO is parsed
     # with std::atoi, which returns 0 for a non-string without erroring, and the consequence
@@ -407,18 +431,54 @@ def check_device():
         "what the netmuxd container is for.")
 
 
+def _browse(service, timeout=15):
+    """Browse for a service. Returns (state, rows, note).
+
+    state is "ok" (the browse ran), or an UNKNOWN reason. The distinction this exists to make:
+    a browse that COULD NOT RUN is not the same as a browse that found nothing, and reporting
+    the first as the second is how a probe failure becomes a confident "not published" -- the
+    same disease as blaming a pairing record for an unreachable phone.
+    """
+    rc, out = _run(["avahi-browse", "-rpt", service], timeout=timeout)
+    if rc is None:
+        # _run collapses three cases into rc None. They need different advice: "install it" is
+        # actively wrong for a tool that IS installed and timed out.
+        if "not installed" in (out or ""):
+            return "missing", [], out
+        return "failed", [], out
+    if rc != 0:
+        # It ran and refused. Previously this fell through to the "found nothing" branch and was
+        # announced as NOT PUBLISHED -- a definite negative from a probe that never answered.
+        return "failed", [], "avahi-browse exited %d: %s" % (rc, (out or "").strip()[:200])
+    rows = [l.split(";") for l in (out or "").splitlines() if l.startswith("=")]
+    return "ok", [r for r in rows if len(r) > 6], out
+
+
+def _is_ours(row):
+    """Is this resolved row advertised by THIS host?"""
+    host = (row[6] or "").split(".")[0].lower()
+    return host == socket.gethostname().split(".")[0].lower()
+
+
 def check_phone_advertisement():
     """Is the phone itself discoverable? netmuxd finds it by mDNS, so this is its precondition."""
-    rc, out = _run(["avahi-browse", "-rpt", "_apple-mobdev2._tcp"], timeout=15)
-    if rc is None:
-        return _result("iPhone is advertising", UNKNOWN, "avahi-browse not available", out)
+    state, rows, note = _browse("_apple-mobdev2._tcp")
+    if state == "missing":
+        return _result("iPhone is advertising", UNKNOWN, "avahi-browse is not installed", note,
+                       "Install avahi-utils. The container image ships it.")
+    if state == "failed":
+        # Not "the phone is not advertising". The probe did not answer, which says nothing about
+        # the phone -- and the old message sent the owner to wake a phone that was already awake.
+        return _result("iPhone is advertising", UNKNOWN, "Could not ask avahi", note,
+                       "This says nothing about the phone. avahi-browse is installed but did not "
+                       "complete: check avahi-daemon on the HOST and the D-Bus socket mount.")
 
-    rows = [l.split(";") for l in out.splitlines() if l.startswith("=")]
     rows = [r for r in rows if len(r) > 8]
     if not rows:
         return _result(
             "iPhone is advertising", FAIL, "The phone is not advertising _apple-mobdev2._tcp",
-            "netmuxd discovers the device this way, so it cannot find it.",
+            "avahi answered and no device is offering itself; netmuxd discovers the device this "
+            "way, so it cannot find it.",
             "The phone must be awake, on this Wi-Fi, and have been paired over USB at least once. "
             "This advert is how a device offers itself for wireless access.")
 
@@ -428,19 +488,37 @@ def check_phone_advertisement():
 
 def check_advertisement(service="_altserver._tcp"):
     """The only trustworthy advertisement test: browse for it, do not trust the server."""
-    rc, out = _run(["avahi-browse", "-rpt", service], timeout=15)
-    if rc is None:
-        return _result("mDNS advertisement", UNKNOWN, "avahi-browse not available", out,
+    state, rows, note = _browse(service)
+    if state == "missing":
+        return _result("mDNS advertisement", UNKNOWN, "avahi-browse is not installed", note,
                        "Install avahi-utils. This is the ONLY reliable check: AltServer cannot "
                        "detect its own advertisement failing, and avahi can report success "
                        "while publishing nothing.")
-    if any(line.startswith("=") for line in out.splitlines()):
-        hosts = [l.split(";")[6] for l in out.splitlines()
-                 if l.startswith("=") and len(l.split(";")) > 6]
+    if state == "failed":
+        return _result("mDNS advertisement", UNKNOWN, "Could not ask avahi", note,
+                       "The probe did not complete, so this says NOTHING about whether the "
+                       "advertisement is up -- do not read it as a failure. avahi-browse is "
+                       "installed. Check that avahi-daemon is running on the HOST and that the "
+                       "D-Bus socket is mounted; an AppArmor denial looks exactly like this.")
+
+    ours = [r for r in rows if _is_ours(r)]
+    if ours:
         return _result("mDNS advertisement", OK, "%s is published" % service,
-                       "Seen on: %s" % ", ".join(sorted(set(hosts))) if hosts else "")
+                       "This host, on: %s" % ", ".join(sorted({r[1] for r in ours})))
+    if rows:
+        # Someone ELSE's AltServer. This used to read as OK, so a second server on the LAN -- or
+        # a stale record from a machine that has gone -- made this check green while this host
+        # advertised nothing at all.
+        return _result("mDNS advertisement", FAIL,
+                       "%s is published, but NOT by this host" % service,
+                       "Seen from: %s. This host is %s."
+                       % (", ".join(sorted({r[6] for r in rows})), socket.gethostname()),
+                       "Another AltServer on this LAN is advertising, or a stale record has not "
+                       "expired. Your phone may pair with that one instead. This server is still "
+                       "undiscoverable.")
     return _result("mDNS advertisement", FAIL, "%s is NOT published" % service,
-                   "Nothing is advertising it, so AltStore cannot discover this server.",
+                   "avahi answered and nothing is advertising it, so AltStore cannot discover "
+                   "this server.",
                    "Check python3 and libavahi-compat-libdnssd-DEV (not -libdnssd1: the code "
                    "dlopens the unversioned libdns_sd.so) and that avahi-daemon is running.")
 
