@@ -6,3 +6,6 @@ build/
 __pycache__/
 *.pyc
 docs/
+# Local cargo output, including build-idevice-cross.sh's target/cross; the image builds idevice
+# in its own stage.
+libraries/idevice/target/
