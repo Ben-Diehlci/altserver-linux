@@ -91,6 +91,27 @@ check(any("status_checks.py" in x for x in web.get("test", [])),
       "the altserver-web healthcheck runs status_checks.py (nothing else ever runs it)")
 check("-q" in web.get("test", []) or "--quiet" in web.get("test", []),
       "it uses quiet mode (Docker truncates healthcheck output to 4KB)")
+check("--server-only" in web.get("test", []),
+      "it judges the SERVER, not whether the phone is home -- otherwise the container goes "
+      "unhealthy every time its owner leaves the house, and the badge gets ignored")
+
+# And --server-only must actually DROP the device checks, not just be accepted as a flag.
+sys.path.insert(0, os.path.join(ROOT, "web"))
+import status_checks as _sc  # noqa: E402
+_names = set()
+_real_device = _sc.check_device
+_sc.check_device = lambda: (_names.add("device-ran") or
+                            {"name": "iPhone reachability", "state": _sc.FAIL,
+                             "summary": "", "detail": "", "fix": ""})
+try:
+    _out = _sc.run_all(anisette_url="http://127.0.0.1:1", server_only=True)
+finally:
+    _sc.check_device = _real_device
+_reported = [c["name"] for c in _out["checks"]]
+check("device-ran" not in _names,
+      "--server-only does not even RUN the device checks")
+check(not any(n in _sc.DEVICE_DEPENDENT for n in _reported),
+      "and none of %s appears in the result (%s)" % (list(_sc.DEVICE_DEPENDENT), _reported))
 
 # Polling anisette's "/" performs REAL provisioning against Apple. A healthcheck must never.
 ani = " ".join(services["anisette"].get("healthcheck", {}).get("test", []))

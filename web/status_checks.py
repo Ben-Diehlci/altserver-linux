@@ -389,8 +389,24 @@ def check_altserver_running():
                    "Trust the mDNS check above over this one.")
 
 
-def run_all(anisette_url=None):
+# The checks that depend on the PHONE being present, as opposed to the server working.
+#
+# This distinction matters for the container healthcheck. check_device returns FAIL when the
+# phone is on neither transport, which is correct on the dashboard and wrong as a verdict on the
+# server: take the phone out of the house and the container would go unhealthy every time. A
+# badge that is red whenever its owner leaves gets ignored, which is how alert fatigue starts --
+# and an ignored badge is no better than the no-badge state that let the 09-22 outage run for
+# days.
+DEVICE_DEPENDENT = ("iPhone reachability", "iPhone is advertising")
+
+
+def run_all(anisette_url=None, server_only=False):
     """Run every check, in parallel apart from the one real dependency.
+
+    server_only drops the checks that need the phone to be home, leaving the four things the
+    server is actually responsible for: anisette, clock agreement, its own mDNS advertisement,
+    and the daemon process. That is the right verdict for a healthcheck; the page always shows
+    everything.
 
     These were serial, which made the page as slow as the SUM of its checks. Two of them shell out
     to avahi-browse with a 15s timeout, so when an AppArmor rule started denying avahi's D-Bus
@@ -411,6 +427,8 @@ def run_all(anisette_url=None):
 
     rest = [_clock, check_device, check_phone_advertisement,
             check_advertisement, check_altserver_running]
+    if server_only:
+        rest = [_clock, check_advertisement, check_altserver_running]
 
     results = [None] * len(rest)
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(rest)) as pool:
@@ -442,7 +460,10 @@ if __name__ == "__main__":
     # 5 healthcheck outputs and truncates each to 4KB, so the full document would be clipped
     # mid-object and tell an operator running `docker inspect` nothing useful.
     _quiet = "-q" in sys.argv[1:] or "--quiet" in sys.argv[1:]
-    _result = run_all()
+    # --server-only: judge the SERVER, not whether the phone happens to be home. See
+    # DEVICE_DEPENDENT above for why a healthcheck wants this and the dashboard does not.
+    _server_only = "--server-only" in sys.argv[1:]
+    _result = run_all(server_only=_server_only)
     if _quiet:
         _bad = [c["name"] for c in _result["checks"] if c["state"] in (FAIL, WARN, UNKNOWN)]
         print("%s%s" % (_result["overall"], (": " + ", ".join(_bad)) if _bad else ""))

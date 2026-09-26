@@ -1360,6 +1360,14 @@ the fallback used to say "No anisette timestamp to compare against" when one was
    provisioning against Apple and a polling healthcheck on it would hammer Apple's endpoint at
    exactly the moment an identity volume has gone missing.
 
+   **It judges the SERVER, not whether the phone is home** (`--server-only`). `check_device`
+   returns FAIL when the device is on neither transport, which is correct on the dashboard and
+   wrong as a verdict on the server: without this the container would go unhealthy every time its
+   owner walked out of the house. A badge that is red half the time gets ignored, and an ignored
+   badge is no better than the no-badge state that let 09-22 run for days. The four checks that
+   remain are the ones the server is actually responsible for: anisette, clock agreement, its own
+   mDNS advertisement, and the daemon process.
+
    **The altserver-web healthcheck is also what finally RUNS the checks on a schedule.** Until
    now `status_checks.py` executed only inside a browser's HTTP GET, so the verdict existed
    solely in the instant somebody opened the page -- which meant the 503 and Nagios exit codes

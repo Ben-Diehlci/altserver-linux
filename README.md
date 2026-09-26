@@ -342,7 +342,12 @@ of a dead deployment is an app that will not open, a week later.
   **You do not have to set any of this up.** Every service in the stack now declares a
   healthcheck, so Portainer shows a health badge with no external tooling at all, and the
   `altserver-web` check is what runs `status_checks.py` on a schedule (every 5 minutes) -- until
-  it existed, nothing ran the checks except a browser loading the page. Note that plain Compose
+  it existed, nothing ran the checks except a browser loading the page.
+
+  The health badge uses `--server-only`, which judges the server rather than whether your phone
+  happens to be at home: anisette, clock agreement, the mDNS advertisement and the daemon
+  process. Otherwise the container would go unhealthy every time you left the house. The page
+  itself always shows everything, device checks included. Note that plain Compose
   never RESTARTS an unhealthy container; that is Swarm. The health state is for the dashboard and
   for any poller you add.
 

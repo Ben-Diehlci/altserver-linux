@@ -343,7 +343,13 @@ services:
       # the full JSON would be clipped mid-object). Exit codes are Nagios: 0 OK, 1 WARNING,
       # 2 CRITICAL -- so a WARN marks the container unhealthy too. That is deliberate: "I cannot
       # tell" must not look like "fine". retries: 3 absorbs a transient probe failure.
-      test: ["CMD", "python3", "/opt/altserver-web/status_checks.py", "-q"]
+      #
+      # --server-only judges the SERVER, not whether your phone is currently at home. The full
+      # check reports FAIL when the device is on neither transport, which is right on the
+      # dashboard and wrong here: without this the container would go unhealthy every time you
+      # walked out of the house, and a badge that is red half the time gets ignored. The page
+      # itself always shows everything.
+      test: ["CMD", "python3", "/opt/altserver-web/status_checks.py", "-q", "--server-only"]
       interval: 5m
       timeout: 120s
       retries: 3
