@@ -116,6 +116,7 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | *(this)* | **Failures are visible to machines.** `/api/status` was 200 and `status_checks.py` exited 0 no matter what they found, so every monitor saw green through the outage. Now 503 and Nagios exit codes, guarded end-to-end by `check_status_signals.py`. |
 | *(this)* | **Editing a rewriter rebuilds again.** Three of four rewriter rules were not prerequisites of their output and `clean` left the patched trees, so rewriter edits silently did nothing. Plus the clock check no longer reports OK for a comparison it never ran. |
 | *(this)* | **Status history.** Each run is recorded, so the page shows a per-check timeline and "last not-ok 2h ago" instead of only a snapshot. Answers the question the 09-22 outage could not. |
+| *(this)* | **Two audits, 65 findings.** Every status message and the whole README checked against the code. Same disease throughout: a check that cannot tell "could not determine" from "determined no". `check_readme_claims.py` makes the docs executable. |
 
 ### CONFIRMED 2026-09-14: the Apple GSA client-info block is real
 
@@ -1489,6 +1490,68 @@ and graded the early-return's text as a feature failure -- turning the Guards jo
 nothing. Every host dependency is now pinned and the test is verified under BOTH conditions. It
 also gained a `reached_pairing()` precondition, because the assertions graded output TEXT: an
 early return looked like a wrong answer instead of a broken setup.
+
+### CONFIRMED 2026-09-26: two audits, 65 findings, and one disease
+
+After the owner turned their phone's Wi-Fi off to test the new healthcheck and was told to
+re-pair over USB, two audits were run: 35 agents over every status message, and 55 over README.md
+against the tree. 27 confirmed of 31 in the first, 38 of 51 in the second.
+
+They are all the same disease, and it is the one this whole revival keeps finding: **a check that
+cannot distinguish "I could not tell" from "I determined no".** Written out, the instances were:
+
+  * A probe failure reported as a definite negative. `avahi-browse` exiting non-zero was not
+    handled AT ALL -- it fell through to the found-nothing branch and was announced as
+    "_altserver._tcp is NOT published", which drives the 503 and the container healthcheck. Same
+    hole told the owner their phone was not advertising when the probe never ran.
+  * A stranger's advertisement accepted as ours. `check_advertisement` matched any resolved row,
+    so a second AltServer on the LAN made the check green while this host published nothing. The
+    watchdog had matched on port and serverID since it was written; the status check was weaker
+    than the thing it was watching.
+  * An HTTP error reported as unreachable, sending the owner to `docker ps` (which shows the
+    container UP) and inviting a redeploy -- the one action anisette-stack.yml:47-58 says destroys
+    the machine identity. Introduced by me hours earlier with a bare `except Exception`, directly
+    above a handler that got it right.
+  * A process check that could not FAIL in the shipped stack. Its blindness guard tested for
+    /proc/1/root/usr/local/bin/AltServer, which is MISSING precisely when `pid: host` is set,
+    because PID 1 is then the host init. So it fired in the only deployment where the check can
+    see everything. "A verification that cannot fail is worse than none" (REVIVAL.md:877), for
+    the third time in this file.
+  * "No device on either transport" asserted when neither transport was queried: _devices_via
+    returns None for could-not-ask and [] for asked-and-empty, and both are falsy.
+
+**AND MY OWN lockdownd FIX WAS LARGELY UNREACHABLE.** Verified against
+libraries/libimobiledevice/tools/idevicepair.c rather than assumed: print_error_message
+(:115-144) prints pairing-stage failures as WORDS WITH NO NUMBER, and only connection-stage
+failures carry "error code %d" (:409). The -19/-18/-2/-4/-5 branches could never fire for
+`validate`. Every genuine pairing failure landed in "unrecognised, do not assume a pairing
+problem" -- the opposite of the truth, with no action offered. Only the -8 transport case worked,
+which is exactly the case I had tested it against. `classify_pair_failure()` now matches text
+first, code second, shared by both pages so they cannot drift.
+
+**The README had drifted into 38 defects because nothing executed it.** The worst was a security
+claim -- "`docker logs` is not filtered and does contain the full account record and bearer
+tokens" -- false for months, and contradicted ninety lines further down. It misled both ways:
+withhold clean logs, or go to them for unredacted detail during an incident and silently get a
+filtered stream. Also: `network_mode: host` listed on two services when three have it (omitting
+`altserver`, where Bonjour makes it non-negotiable); Setup running repo files without ever saying
+to clone; `docker build -t altserver .` with no Dockerfile at the root; `avahi-utils` missing from
+Runtime requirements, without which the watchdog silently turns ITSELF off; the altserver-data
+volume never mentioned in the backup step; and "Verify before going further" curling the anisette
+route that provisions against Apple, with no warning not to loop it.
+
+`tests/check_readme_claims.py` now executes the documentation: variables documented both
+directions, endpoints both directions, guards both directions, stated healthcheck windows
+compared against the compose file, links resolved, bash blocks parsed. It caught itself on its
+first run for not appearing in the table it checks, and then caught a blockquoted bash fence --
+a copy-paste trap, since bash reads the quote's leading `>` as a redirection -- in a block added
+ninety seconds earlier.
+
+**The method note worth keeping.** Almost none of this was found by reading. The pairing bug came
+from a human turning Wi-Fi off; the dead tee-retry from driving it against ENOSPC; the em dashes
+from reading the SERVED page rather than the source; the unreachable lockdownd branches from
+opening the vendored tool's source instead of trusting the codes. Three times a guard that
+grepped for a variable name passed while the behaviour it named was broken. Exercise the thing.
 
 ## Repository audit, 2026-09-15
 
