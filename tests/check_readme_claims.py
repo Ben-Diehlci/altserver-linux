@@ -149,6 +149,15 @@ for l in lines:
         if not os.path.exists(os.path.join(ROOT, os.path.normpath(m.group(1)))):
             bad("broken file link: %s" % m.group(1))
 
+# A bash fence INSIDE a blockquote is a copy-paste trap: every line carries a "> " prefix, and
+# bash reads the leading > as a redirection, so pasting it writes files instead of running the
+# command. Same class as the angle-bracket placeholders below. Caught by this guard on a block
+# this very session added.
+for n, l in enumerate(lines, 1):
+    if re.match(r"^\s*>\s*```bash", l):
+        bad("README.md:%d: a bash block is inside a blockquote; copying it carries the '> ' "
+            "prefixes, which bash reads as redirections" % n)
+
 blocks = re.findall(r"```bash\n(.*?)```", src, re.S)
 for i, b in enumerate(blocks, 1):
     with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as fh:

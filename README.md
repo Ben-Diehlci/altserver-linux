@@ -235,6 +235,19 @@ code is prompted for **in the browser**.
 That page exists because AltServer reads the 2FA code from `std::cin`, and a detached container has
 no terminal. The web UI supervises the process and delivers the code to a read with no tty.
 
+**If it says `No IPA at /data/AltStore.ipa`**, the automatic fetch in step 3 failed - usually a
+network blip at first start, since it resolves the download from AltStore's live catalogue. It is
+not fatal and it does not block refreshes of apps you have already installed; only a first-time
+install needs the file. Confirm and retry without recreating anything:
+
+```bash
+docker logs altserver 2>&1 | grep -i "could not"
+docker exec altserver fetch-altstore --dest /data/AltStore.ipa
+```
+
+A `docker restart altserver` does the same on the way up. Add `--force` to re-download a file
+that is present but suspect.
+
 > **The install page takes an Apple ID password over plain HTTP.** On a trusted LAN that is a
 > considered trade-off. Anywhere else, change the `altserver-web` command to
 > `["--host", "127.0.0.1", "--port", "8099"]` and reach it over an SSH tunnel:
@@ -507,7 +520,17 @@ Usage:  AltServer-Linux options [ ipa-file ]
   -a  --appleID AppleID  Apple ID to sign the ipa, only needed when installing IPA.
   -p  --password passwd  Password of Apple ID, only needed when installing IPA.
   -d  --debug            Print debug output, can be used several times to increase debug level.
+
+The following environment var can be set for some special situation:
+  - ALTSERVER_ANISETTE_SERVER: (REQUIRED) URL of an anisette server, including
+          the scheme, e.g. http://127.0.0.1:6969
+          ... (four more entries; see the Environment table below)
 ```
+
+That elision is marked on purpose. `--help` really does print an environment section after the
+flags, and reproducing only the flags implied the binary had nothing to say about them - which is
+how `ALTSERVER_NO_SUBSCRIBE` stayed undocumented here while the program itself described it. Run
+`docker exec altserver AltServer --help` for the authoritative text.
 
 No IPA argument starts the daemon. With one, it performs a one-time install - which needs a real
 terminal, because the 2FA code is read from stdin.
