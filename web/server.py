@@ -207,9 +207,15 @@ async function loadHistory() {
   }
 }
 
+let firstLoad = true;
 async function load() {
   try {
-    const r = await fetch('/api/status', {cache:'no-store'});
+    // First load asks for the full check (a human just opened this). The 30s refresh does
+    // not: /api/status without full=1 probes anisette's STATIC route, because the bare root
+    // provisions against Apple when the machine identity is missing, and an open tab would
+    // otherwise trigger that 2880 times a day.
+    const r = await fetch('/api/status' + (firstLoad ? '?full=1' : ''), {cache:'no-store'});
+    firstLoad = false;
     const d = await r.json();
     const o = document.getElementById('overall');
     o.textContent = d.overall; o.className = 'overall ' + d.overall;
@@ -566,16 +572,30 @@ class Handler(BaseHTTPRequestHandler):
                         "path": status_checks.HISTORY_PATH}
             self._send(200, json.dumps(data), "application/json")
         elif path == "/api/status":
+            # ?full=1 means "a human is asking, once": do the real anisette fetch and judge on
+            # everything. Without it this is treated as polling, which is what the 30s page
+            # refresh and any uptime monitor actually are.
+            full = self.path.find("full=1") >= 0
             try:
-                data = status_checks.run_all()
+                data = status_checks.run_all(polling=not full)
             except Exception as exc:  # never let a check crash the dashboard
                 data = {"overall": "fail", "host": "", "checks": [{
                     "name": "Status service", "state": "fail",
                     "summary": "A check raised an exception", "detail": str(exc), "fix": ""}]}
-            # 503 when overall is "fail", so an uptime monitor sees the outage. This used to be
-            # an unconditional 200, which is how a three-day total outage went unnoticed. The
-            # page's own fetch() does not check r.ok, so it still renders normally.
-            self._send(status_checks.http_status(data.get("overall")),
+            # The BODY keeps the full verdict, because that is what a human reading the page
+            # should see. The STATUS CODE reflects the server only, unless ?full=1.
+            #
+            # Both halves matter. 503 exists because an unconditional 200 is how a three-day
+            # total outage went unnoticed. But judging the code on EVERY check meant the
+            # endpoint the README tells you to monitor returned 503 every time the phone left
+            # the house -- and a monitor that pages you for going out gets muted, which lands
+            # back at no monitoring at all.
+            try:
+                data["server_overall"] = status_checks.verdict(data["checks"], server_only=True)
+            except Exception:
+                data["server_overall"] = data.get("overall")
+            code_from = data["overall"] if full else data["server_overall"]
+            self._send(status_checks.http_status(code_from),
                        json.dumps(data), "application/json")
         else:
             self._send(404, "not found\n", "text/plain; charset=utf-8")

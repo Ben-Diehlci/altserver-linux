@@ -1450,6 +1450,46 @@ exempting the escaping ones (`&amp;` and friends exist to make text safe, not to
 The served page is now ASCII at every layer: raw bytes, decoded string values, and after full
 entity expansion.
 
+### CONFIRMED 2026-09-26: the monitoring advice paged you for leaving the house, and polled Apple
+
+Two defects in work from the day before, found by a README audit rather than by use.
+
+**1. `/api/status` returned 503 whenever the phone was away.** The endpoint the README told you
+to monitor judged its status code on EVERY check, including `iPhone reachability`, which fails
+whenever the phone is asleep, out of the house or off Wi-Fi. An alert that fires every time its
+owner goes out is silenced within a week -- which lands back at no monitoring at all, the exact
+state that let 09-22 run for days. The healthcheck already used `--server-only` for this reason;
+the HTTP endpoint did not. The status code now follows a `server_overall` verdict, the body
+carries both, and `?full=1` restores the everything-judged behaviour for anyone who wants it.
+
+**2. Anything polling the status hit the anisette route that provisions against Apple.**
+`check_anisette` fetches the bare root, which is the v1 DATA route:
+`deploy/anisette-stack.yml:62-73` refuses to point even a healthcheck at it, because on a server
+whose machine identity is missing it performs REAL PROVISIONING against Apple, and polling it
+"would hammer Apple's endpoint at exactly the moment your identity volume has gone missing --
+turning a restore-the-backup incident into rate-limit / account-lock territory."
+
+Two polling loops were doing exactly that. The altserver-web healthcheck added the day before:
+288 times a day. And, larger and pre-existing, the status page's own 30-second auto-refresh
+(`setInterval(load, 30000)`): **2880 times a day for any tab left open**. Nobody had connected
+the compose file's warning to the page it was sitting next to.
+
+Polled requests now probe `/v3/client_info`, which is static and contacts Apple for nothing, and
+say plainly that the field contract was not verified. A human opening the page gets the real
+fetch once; the refresh does not. `--record` and `--server-only` imply polling so the compose
+healthcheck cannot opt out of safety by omission.
+
+The guard intercepts `urlopen` and asserts WHICH URL each mode fetches, rather than checking that
+some flag is present -- the flag being present proves nothing about where the request goes.
+
+**Also fixed: a guard that depended on undeclared host state.** `check_status_signals.py` drove
+`pairing.diagnose()`, which returns early when `/var/run/usbmuxd` is absent. That path EXISTS on
+macOS and does not on the Linux CI runner, so the test passed locally, bailed at that step in CI,
+and graded the early-return's text as a feature failure -- turning the Guards job red over
+nothing. Every host dependency is now pinned and the test is verified under BOTH conditions. It
+also gained a `reached_pairing()` precondition, because the assertions graded output TEXT: an
+early return looked like a wrong answer instead of a broken setup.
+
 ## Repository audit, 2026-09-15
 
 Run after `bd/revival` merged into `new`, to answer two questions: is every tracked file

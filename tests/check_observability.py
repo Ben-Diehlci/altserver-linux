@@ -173,6 +173,18 @@ check("_polling = _record or _server_only" in _src,
       "--record / --server-only imply polling, so the compose healthcheck cannot fetch the root")
 
 
+# The page's own 30-second auto-refresh is a polling loop too, and the larger one: an open tab
+# would hit the provisioning route 2880 times a day against the healthcheck's 288. It must ask
+# for the full check only on the first load.
+_srv = open(os.path.join(ROOT, "web", "server.py"), encoding="utf-8").read()
+check("run_all(polling=not full)" in _srv,
+      "/api/status treats a request without full=1 as polling")
+check("firstLoad ? '?full=1' : ''" in _srv,
+      "the page asks for the full check on first load only, not on every 30s refresh")
+check("setInterval(load, 30000)" in _srv,
+      "(and the 30s refresh really exists, so the check above is not vacuous)")
+
+
 # ---- the history must record, bound itself, and never fail silently ------------------------
 import tempfile as _tf  # noqa: E402
 

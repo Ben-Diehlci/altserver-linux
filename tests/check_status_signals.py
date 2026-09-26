@@ -68,17 +68,17 @@ check(status_checks.http_status(status_checks.WARN) == 200, "WARN stays HTTP 200
 
 
 # ---- the real handler actually uses them ---------------------------------------------------
-def serve_with(overall):
+def serve_with(overall, checks=None, query=""):
     """Run the REAL Handler against a canned verdict and return (status, parsed body)."""
     real = status_checks.run_all
+    body = checks or [{"name": "x", "state": overall, "summary": "s", "detail": "", "fix": ""}]
     status_checks.run_all = lambda *a, **k: {
-        "overall": overall, "host": "test",
-        "checks": [{"name": "x", "state": overall, "summary": "s", "detail": "", "fix": ""}]}
+        "overall": overall, "host": "test", "checks": body}
     httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
     try:
-        url = "http://127.0.0.1:%d/api/status" % httpd.server_address[1]
+        url = "http://127.0.0.1:%d/api/status%s" % (httpd.server_address[1], query)
         try:
             with urllib.request.urlopen(url, timeout=10) as r:
                 return r.status, json.loads(r.read())
@@ -99,6 +99,34 @@ code, _ = serve_with(status_checks.OK)
 check(code == 200, "/api/status returns 200 when healthy")
 code, _ = serve_with(status_checks.WARN)
 check(code == 200, "/api/status returns 200 when degraded")
+
+# The endpoint the README tells you to monitor must NOT page you for leaving the house. A
+# monitor that cries wolf gets muted, which lands back at no monitoring at all -- the state
+# that let the 09-22 outage run for days.
+PHONE_AWAY = [
+    {"name": "mDNS advertisement", "state": status_checks.OK, "summary": "", "detail": "", "fix": ""},
+    {"name": "iPhone reachability", "state": status_checks.FAIL, "summary": "", "detail": "", "fix": ""},
+]
+code, body = serve_with(status_checks.FAIL, PHONE_AWAY)
+check(code == 200,
+      "a phone off the LAN does NOT make /api/status return 503 (got %d)" % code)
+check(body.get("overall") == "fail",
+      "but the body still says fail, so the page shows the truth")
+check(body.get("server_overall") == "ok",
+      "and server_overall says the SERVER is fine (got %r)" % body.get("server_overall"))
+
+SERVER_DOWN = [
+    {"name": "mDNS advertisement", "state": status_checks.FAIL, "summary": "", "detail": "", "fix": ""},
+    {"name": "iPhone reachability", "state": status_checks.OK, "summary": "", "detail": "", "fix": ""},
+]
+code, body = serve_with(status_checks.FAIL, SERVER_DOWN)
+check(code == 503,
+      "a real server failure DOES still return 503 (got %d) -- the outage case must not be "
+      "masked by this" % code)
+
+code, _ = serve_with(status_checks.FAIL, PHONE_AWAY, query="?full=1")
+check(code == 503,
+      "?full=1 judges on everything, for someone who wants that (got %d)" % code)
 
 
 # ---- the page must keep working against a non-200 ------------------------------------------

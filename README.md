@@ -336,8 +336,26 @@ of a dead deployment is an app that will not open, a week later.
 
   | Channel | Healthy | Broken |
   |---|---|---|
-  | `GET /api/status` | `200` | **`503`** when any check fails |
-  | `python3 status_checks.py` | exits `0` | exits `2` (`1` = degraded) |
+  | `GET /api/status` | `200` | **`503`** when the SERVER is failing |
+  | `GET /api/status?full=1` | `200` | `503` when ANY check fails, phone included |
+  | `docker exec altserver-web python3 /opt/altserver-web/status_checks.py -q --server-only` | exits `0` | `2` = critical, `1` = degraded |
+
+  **The status code judges the server, not whether your phone is home.** That distinction is the
+  difference between a monitor you keep and one you mute: `iPhone reachability` fails whenever
+  the phone is asleep, out of the house, or off Wi-Fi, and an alert that fires every time you go
+  out gets silenced within a week -- which lands back at no monitoring at all, the state that let
+  the 09-22 outage run for days. The response body always carries both verdicts: `overall`
+  (everything, which is what the page shows) and `server_overall` (the four checks the server is
+  responsible for, which is what the status code follows). Use `?full=1` if you genuinely do want
+  to be paged when the phone is away.
+
+  **Poll the plain endpoint, not `?full=1`.** Without it, the anisette check probes a static
+  route that makes no contact with Apple. `?full=1` fetches the anisette server's bare root to
+  verify all ten fields -- and on a server whose machine identity is missing, that route performs
+  REAL PROVISIONING against Apple. Polling it would retry provisioning on every interval at
+  exactly the moment your identity volume has gone missing, which is how an Apple ID gets
+  rate-limited or locked. The status page asks for the full check when you open it and uses the
+  safe probe for its 30-second refresh, for the same reason.
 
   **You do not have to set any of this up.** Every service in the stack now declares a
   healthcheck, so Portainer shows a health badge with no external tooling at all, and the
@@ -356,11 +374,12 @@ of a dead deployment is an app that will not open, a week later.
   never RESTARTS an unhealthy container; that is Swarm. The health state is for the dashboard and
   for any poller you add.
 
-  Exit codes follow the Nagios plugin convention, so a monitoring agent understands them as-is.
-  One caveat worth knowing: **a degraded result stays HTTP 200**, including the case where the
-  mDNS check cannot run at all. Over the status code alone that is indistinguishable from health,
-  so anything that needs to tell the difference must read `overall` from the body or use the exit
-  code.
+  Exit codes follow the Nagios plugin convention (`0` OK, `1` WARNING, `2` CRITICAL), so a
+  monitoring agent understands them as-is. Two caveats worth knowing. **A degraded result stays
+  HTTP 200**, including the case where the mDNS check cannot run at all -- over the status code
+  alone that is indistinguishable from health, so anything needing that distinction must read
+  `overall` from the body or use the exit code. And `status_checks.py` is not on your PATH; it
+  lives inside the image, hence the `docker exec` form in the table above.
 
   This is not theoretical. On 2026-09-22 the mDNS advertisement was dropped and the server was
   undiscoverable for at least three days -- possibly nine, since nothing recorded it working.
