@@ -336,8 +336,9 @@ check(r["state"] == status_checks.WARN and "locked" in r["summary"].lower(),
 # The PAIRING PAGE had the identical bug and is where someone actually goes to act on the advice.
 import pairing as _pairing  # noqa: E402
 
-check(_pairing.LOCKDOWN_MUX_ERROR == status_checks.LOCKDOWN_MUX_ERROR,
-      "pairing.py shares one definition of the codes rather than a second copy that can drift")
+check(_pairing.classify_pair_failure is status_checks.classify_pair_failure,
+      "pairing.py and the status page share ONE classifier, so they cannot give different "
+      "instructions for the same idevicepair output")
 
 
 def pair_diagnose(pair_output):
@@ -396,6 +397,108 @@ try:
           "a pending Trust prompt still says to tap Trust")
 except Exception as _exc:      # pairing.diagnose touches more of the host than check_device
     check(False, "pairing.py diagnosis could not be exercised: %s" % _exc)
+
+
+# ---- idevicepair reports pairing failures as WORDS, not codes -------------------------------
+# The first version of this branched only on "error code N". Verified against
+# libraries/libimobiledevice/tools/idevicepair.c: print_error_message (:115-144) prints
+# pairing-stage failures as plain English with NO number, and only connection-stage failures
+# carry a code (:409). So the -19/-18/-2/-4/-5 branches were unreachable for `validate`, and
+# every genuine pairing failure fell into "unrecognised, do not assume a pairing problem" --
+# telling the owner the opposite of the truth and giving them no action.
+PAIR_OUTPUTS = {
+    "passcode":   "ERROR: Could not validate with device X because a passcode is set.",
+    "gone":       "No device found.",
+    "unpaired":   "ERROR: Device X is not paired with this host",
+    "trust":      "ERROR: Please accept the trust dialog on the screen of device X",
+    "denied":     "ERROR: Device X said that the user denied the trust dialog.",
+    "failed":     "ERROR: Pairing with device X failed.",
+    "connection": "ERROR: Pairing is not possible over this connection.",
+    "transport":  "ERROR: Could not connect to lockdownd, error code -8",
+}
+for want, out in sorted(PAIR_OUTPUTS.items()):
+    check(status_checks.classify_pair_failure(out) == want,
+          "idevicepair %r is classified as %s (got %r)"
+          % (out[:44], want, status_checks.classify_pair_failure(out)))
+check(status_checks.classify_pair_failure("ERROR: Device X returned unhandled error code -99")
+      == "unknown", "an unrecognised message stays unknown rather than being guessed at")
+
+# The two that must never be confused, end to end through the real check.
+r = diagnose(PAIR_OUTPUTS["unpaired"])
+check("stale" in r["fix"].lower(),
+      "a genuinely unpaired device DOES get the re-pair advice (said %r)" % r["fix"][:60])
+r = diagnose(PAIR_OUTPUTS["gone"])
+check("do not re-pair" in r["fix"].lower(),
+      "a device that vanished does NOT (said %r)" % r["fix"][:60])
+
+
+# ---- a probe that could not be made is not a device that is absent --------------------------
+_real_dv = status_checks._devices_via
+status_checks._devices_via = lambda env, flag: (None, "idevice_id timed out after 10s")
+try:
+    r = status_checks.check_device()
+finally:
+    status_checks._devices_via = _real_dv
+check(r["state"] == status_checks.UNKNOWN,
+      "a transport that could not be asked reports UNKNOWN, not 'No device' (got %r)" % r["state"])
+check("netmuxd" in r["fix"].lower(),
+      "and it points at netmuxd, since a dead container looks identical to an absent phone")
+
+
+# ---- the process check must be able to FAIL in the shipped stack ----------------------------
+# The blindness guard was inverted: it tested for /proc/1/root/usr/local/bin/AltServer, which is
+# MISSING precisely when pid: host is set -- because PID 1 is then the host init. So it fired in
+# the one deployment where the check can see everything, and a dead daemon read as "blind".
+_real_share, _real_run2 = status_checks._shares_host_pids, status_checks._run
+try:
+    status_checks._shares_host_pids = lambda: True
+    status_checks._run = lambda cmd, **kw: (1, "")
+    check(status_checks.check_altserver_running()["state"] == status_checks.FAIL,
+          "with host PIDs and no process, the check FAILS (a check that cannot fail is worse "
+          "than none)")
+    status_checks._run = lambda cmd, **kw: (
+        0, "42 python3 /opt/altserver-web/installer.py --ipa /data/AltStore.ipa")
+    check(status_checks.check_altserver_running()["state"] != status_checks.OK,
+          "the web UI's own installer does not count as the daemon Running")
+    status_checks._run = lambda cmd, **kw: (0, "820820 /usr/local/bin/AltServer")
+    check(status_checks.check_altserver_running()["state"] == status_checks.OK,
+          "the real daemon does")
+    status_checks._shares_host_pids = lambda: False
+    status_checks._run = lambda cmd, **kw: (1, "")
+    check(status_checks.check_altserver_running()["state"] == status_checks.UNKNOWN,
+          "in its own PID namespace it says it is blind instead of guessing")
+finally:
+    status_checks._shares_host_pids, status_checks._run = _real_share, _real_run2
+
+
+# ---- a crashed check must keep its identity -------------------------------------------------
+# "Check #3" breaks its row in the history timeline, which is keyed by name, and loses its
+# device-dependent classification -- so a crashed device check would start marking the container
+# unhealthy, which is what --server-only exists to prevent.
+_real_dev = status_checks.check_device
+
+
+def _raise():
+    raise RuntimeError("kaboom")
+
+
+status_checks.check_device = _raise
+try:
+    _crashed = status_checks.run_all(anisette_url="http://127.0.0.1:1")
+finally:
+    status_checks.check_device = _real_dev
+_names = [c["name"] for c in _crashed["checks"]]
+check("iPhone reachability" in _names,
+      "a check that raises still reports under its own name (got %s)" % _names)
+check(not any(n.startswith("Check #") for n in _names),
+      "and not as 'Check #N', which would break its history row")
+
+
+# ---- the pairing wizard must not block on the normal state of a cable-free server -----------
+_pr = pair_diagnose(PAIR_OUTPUTS["unpaired"])
+check(reached_pairing(_pr),
+      "a missing /var/run/usbmuxd no longer blocks the wizard -- it is the NORMAL state of a "
+      "server with no cable, and blocking meant a finished setup reported BLOCKED")
 
 
 if failures:

@@ -28,9 +28,7 @@ import subprocess
 # One definition of the lockdownd result codes, imported rather than copied: two tables drift,
 # and this one decides whether the page tells someone to go and re-pair. status_checks does not
 # import this module, so there is no cycle.
-from status_checks import (LOCKDOWN_INVALID_CONF, LOCKDOWN_MUX_ERROR,
-                           LOCKDOWN_PAIRING_DIALOG_PENDING, LOCKDOWN_RECEIVE_TIMEOUT,
-                           LOCKDOWN_USER_DENIED_PAIRING, _lockdown_code)
+from status_checks import classify_pair_failure
 
 STEP_OK, STEP_TODO, STEP_BLOCKED = "ok", "todo", "blocked"
 
@@ -100,40 +98,74 @@ def diagnose():
     steps.append({"title": "Device tools installed", "state": STEP_OK,
                   "detail": "idevice_id and idevicepair are available", "action": "", "note": ""})
 
-    # --- 2. is usbmuxd actually listening? ---------------------------------------------------
+    # --- 2. the host's usbmuxd socket (informational only) ----------------------------------
+    # This used to BLOCK here, and it was the wrong shape twice over.
+    #
+    # Ubuntu's usbmuxd is udev-activated: it starts when a cable is inserted and exits when the
+    # last device is removed. An unattended wireless server therefore has no socket as its NORMAL
+    # steady state -- so the wizard answered the designed configuration by refusing to continue
+    # and telling the owner to start a service that was behaving correctly. A phone that was
+    # paired and reachable over netmuxd never got checked, so a finished setup reported BLOCKED.
+    #
+    # And the file proves little either way: a bind mount creates it regardless, and REVIVAL.md
+    # records measuring the socket present with nothing bound to it. Whether a mux ANSWERS is
+    # established by the next step, which actually talks to one.
     sock = "/var/run/usbmuxd"
-    if os.path.exists(sock):
-        steps.append({"title": "usbmuxd socket present", "state": STEP_OK,
-                      "detail": sock, "action": "", "note": ""})
-    else:
-        steps.append({
-            "title": "usbmuxd is not running",
-            "state": STEP_BLOCKED,
-            "detail": "%s does not exist." % sock,
-            "action": "sudo systemctl start usbmuxd    # or plug the phone in, which starts it",
-            "note": "Older guidance says to stop usbmuxd because netmuxd takes this same "
-                    "socket. That is NOT true of this stack: netmuxd is given its own "
-                    "--socket-path in a shared volume, so the host usbmuxd keeps the cable "
-                    "and nothing contends. Leave usbmuxd alone."
-                    + (" This container needs the socket bind-mounted from the host."
-                       if _in_container() else ""),
-        })
-        return {"steps": steps, "udids": [], "paired": False, "next": steps[-1]["title"]}
+    steps.append({
+        "title": "Host usbmuxd socket present" if os.path.exists(sock)
+                 else "No host usbmuxd socket (normal without a cable)",
+        "state": STEP_OK,
+        "detail": sock if os.path.exists(sock) else "%s does not exist" % sock,
+        "action": "",
+        "note": "" if os.path.exists(sock) else
+                "Not a fault. Ubuntu's usbmuxd is udev-activated and exits when the last cable is "
+                "removed, so a cable-free server normally has no socket. netmuxd is what serves "
+                "the phone over Wi-Fi. This matters only when you are pairing for the first time, "
+                "which needs the cable anyway.",
+    })
 
-    # --- 3. is a device visible? -------------------------------------------------------------
-    # BOTH transports. `idevice_id -l` includes USB only (tools/idevice_id.c: case 'l' sets
-    # include_usb), and `-n` includes network only. On a cable-free server the phone is reachable
-    # solely over netmuxd, so checking USB alone reported "no device" for a perfectly paired phone
-    # and made /install demand a cable it does not need. Same flag trap as the reachability check.
     def _udids(args, env=None):
-        _rc, o = _run(["idevice_id"] + args, env=env)
-        return [l.strip() for l in (o or "").splitlines()
-                if re.match(r"^[0-9A-Fa-f-]{8,}$", l.strip())]
+        """Returns (udids, note). note is non-empty when the MUX could not be reached.
 
-    usb_udids = _udids(["-l"])
-    net_udids = [u for u in _udids(["-n"], env=_WIRELESS_ENV) if u not in usb_udids]
+        Discarding the return code here conflated two opposite conditions: idevice_id prints
+        "ERROR: Unable to retrieve device list!" and exits non-zero when it cannot reach the
+        socket at all, versus no output and exit 0 for a mux that answered and has no devices.
+        Treating the first as the second made a dead netmuxd look like an absent phone, and the
+        wizard prescribed hypervisor USB passthrough and a different cable for a container that
+        needed restarting.
+        """
+        rc, o = _run(["idevice_id"] + args, env=env)
+        found = [l.strip() for l in (o or "").splitlines()
+                 if re.match(r"^[0-9A-Fa-f-]{8,}$", l.strip())]
+        if found:
+            return found, ""
+        if rc is None:
+            return [], (o or "idevice_id could not be run")
+        if rc != 0 or "unable to retrieve device list" in (o or "").lower():
+            return [], "no mux answered: %s" % (o or "").strip()[:120]
+        return [], ""
+
+    usb_udids, usb_note = _udids(["-l"])
+    net_list, net_note = _udids(["-n"], env=_WIRELESS_ENV)
+    net_udids = [u for u in net_list if u not in usb_udids]
     udids = usb_udids + net_udids
     wireless_only = bool(net_udids) and not usb_udids
+
+    if not udids and net_note:
+        # The WIRELESS mux did not answer. That is a container problem, not a phone problem, and
+        # it must not be answered with a cable and a hypervisor setting.
+        steps.append({
+            "title": "netmuxd is not answering",
+            "state": STEP_TODO,
+            "detail": "%s%s" % (net_note, (" | usbmuxd: " + usb_note) if usb_note else ""),
+            "action": "docker restart netmuxd",
+            "note": "This says NOTHING about whether your phone is present -- nothing was able to "
+                    "ask. netmuxd serves the device over Wi-Fi; if it is down or its socket is "
+                    "not mounted into this container, no device can be seen however healthy the "
+                    "phone is. Check `docker ps` for netmuxd and that the muxd-socket volume is "
+                    "mounted. Do NOT go looking for a cable on account of this.",
+        })
+        return {"steps": steps, "udids": [], "paired": False, "next": steps[-1]["title"]}
 
     if not udids:
         steps.append({
@@ -188,58 +220,63 @@ def diagnose():
         return {"steps": steps, "udids": udids, "paired": True,
                 "next": "Nothing -- setup complete" if backup else "Back up the pairing record"}
 
-    if "passcode" in low:
-        steps.append({
-            "title": "Unlock the iPhone",
-            "state": STEP_TODO,
-            "detail": out,
-            "action": "",
-            "note": "The screen must be unlocked at the moment this runs. Unlock it and re-check "
-                    "-- this is not a permissions problem, despite how it reads.",
-        })
-        return {"steps": steps, "udids": udids, "paired": False, "next": "Unlock the iPhone"}
+    kind = classify_pair_failure(out)
 
-    # WHICH failure. lockdownd's codes separate "could not reach the device" from "the device
-    # is not paired", and only the second is answered by tapping Trust. Without this, a phone
-    # with its Wi-Fi off -- which netmuxd goes on listing for a while from its stored record --
-    # was told to unplug and replug a cable it does not need, to fix a pairing that was fine.
-    code = _lockdown_code(out)
-    if code in (LOCKDOWN_MUX_ERROR, LOCKDOWN_RECEIVE_TIMEOUT):
-        steps.append({
-            "title": "The phone did not answer",
-            "state": STEP_TODO,
-            "detail": out or "Listed, but unreachable.",
-            "action": "",
-            "note": "This is a TRANSPORT failure (lockdownd error %s), not a pairing one. The "
-                    "device is still listed because netmuxd remembers it for a while after it "
-                    "goes away, so this is what an asleep phone, one with Wi-Fi off, or one on "
-                    "another network looks like. Wake it and put it back on this LAN -- do NOT "
-                    "re-pair to fix this." % code,
-        })
-        return {"steps": steps, "udids": udids, "paired": False,
-                "next": "Wake the phone and put it on this network"}
+    def _step(title, detail, action, note, nxt):
+        steps.append({"title": title, "state": STEP_TODO, "detail": detail,
+                      "action": action, "note": note})
+        return {"steps": steps, "udids": udids, "paired": False, "next": nxt}
 
-    if code == LOCKDOWN_PAIRING_DIALOG_PENDING:
-        steps.append({
-            "title": "Tap Trust on the iPhone",
-            "state": STEP_TODO,
-            "detail": out,
-            "action": "",
-            "note": "The Trust prompt is waiting (or was dismissed) on the device. Unlock it and "
-                    "tap Trust. No cable and no re-pairing needed.",
-        })
-        return {"steps": steps, "udids": udids, "paired": False, "next": "Tap Trust on the iPhone"}
+    if kind == "passcode":
+        return _step("Unlock the iPhone", out, "",
+                     "The screen must be unlocked at the moment this runs. Unlock it and "
+                     "re-check -- this is not a permissions problem, despite how it reads.",
+                     "Unlock the iPhone")
 
-    if code == LOCKDOWN_USER_DENIED_PAIRING:
-        steps.append({
-            "title": "The phone refused the pairing",
-            "state": STEP_TODO,
-            "detail": out,
-            "action": "idevicepair pair",
-            "note": "Someone tapped Do Not Trust. Run the pair command with the phone unlocked "
-                    "and tap TRUST this time.",
-        })
-        return {"steps": steps, "udids": udids, "paired": False, "next": "Trust this computer"}
+    if kind in ("transport", "gone"):
+        # "No device found." and a lockdownd transport error both mean the device did not answer.
+        # The catch-all used to call this "visible but not paired" and send the owner for a
+        # cable -- to fix a phone that was asleep.
+        return _step("The phone did not answer",
+                     out or "Listed, but unreachable.", "",
+                     "This is a TRANSPORT failure, not a pairing one. The device is still listed "
+                     "because netmuxd remembers it for a while after it goes away, so this is "
+                     "what an asleep phone, one with Wi-Fi off, or one on another network looks "
+                     "like. Wake it and put it back on this LAN -- do NOT re-pair to fix this.",
+                     "Wake the phone and put it on this network")
+
+    if kind == "trust":
+        return _step("Tap Trust on the iPhone", out, "",
+                     "The Trust prompt is waiting (or was dismissed) on the device. Unlock it "
+                     "and tap Trust. No cable and no re-pairing needed.",
+                     "Tap Trust on the iPhone")
+
+    if kind == "denied":
+        return _step("The phone refused the pairing", out, "idevicepair pair",
+                     "Someone tapped Do Not Trust. Run the pair command with the phone unlocked "
+                     "and tap TRUST this time.", "Trust this computer")
+
+    if kind == "connection":
+        return _step("Pairing is not possible over this connection", out, "",
+                     "The device will not pair over the transport in use. First-time pairing "
+                     "needs the cable; refreshing afterwards does not.",
+                     "Pair over USB")
+
+    if kind in ("unpaired", "failed"):
+        # The genuine case, and the only one that earns a cable.
+        return _step("Trust this computer on the iPhone",
+                     out or "The device is visible but not paired.", "idevicepair pair",
+                     "Unlock the phone, run the pair command, then tap TRUST on the prompt that "
+                     "appears on the device and enter its passcode." + ("" if wireless_only else
+                     " If no prompt appears, unplug and replug the cable with the phone "
+                     "unlocked."),
+                     "Trust this computer")
+
+    return _step("Pairing could not be validated",
+                 out or "idevicepair gave no output.", "",
+                 "Unrecognised idevicepair output, quoted above verbatim. This does not "
+                 "establish that the pairing is bad, so do not re-pair on account of it alone.",
+                 "Read the message above")
 
     steps.append({
         "title": "Trust this computer on the iPhone",

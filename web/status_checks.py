@@ -153,7 +153,10 @@ def check_anisette(url=None, polling=False):
             # which will show the container up -- invites the one action this deployment must
             # not take casually: anisette-stack.yml:47-58 documents that a Portainer redeploy
             # destroys device.json and adi.pb, mints a brand-new machine, and demands 2FA.
-            return _result("Anisette server", FAIL, "HTTP %s from %s" % (exc.code, probe),
+            # A 404 here is not a failure of the SERVER: /v3/client_info simply does not exist
+            # on a v1-only implementation, which can still serve anisette data perfectly.
+            state = WARN if exc.code == 404 else FAIL
+            return _result("Anisette server", state, "HTTP %s from %s" % (exc.code, probe),
                            "The server answered, so it is running and listening; only this route "
                            "failed. %s" % exc,
                            "Do NOT redeploy the anisette stack to fix this -- that can destroy "
@@ -171,12 +174,35 @@ def check_anisette(url=None, polling=False):
             status = resp.status
             body = resp.read(65536).decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
+        hint = {
+            401: "The server wants credentials, which AltServer does not send. Wrong server?",
+            403: "The server refused. A proxy or its own access rules, not AltServer.",
+            404: "No anisette payload at this path. Some servers serve v1 only at the root.",
+            429: "Rate limited. If something is polling this URL, stop it before Apple notices.",
+            502: "Something IN FRONT of anisette answered; anisette itself is not up behind it.",
+            503: "Reachable but not ready. If it has just started, provisioning can take minutes.",
+            504: "A proxy timed out waiting for anisette.",
+        }.get(exc.code, "Check `docker logs anisette`.")
         return _result("Anisette server", FAIL, "HTTP %s from %s" % (exc.code, url),
-                       "Server is reachable but unhealthy.",
-                       "Check the anisette container's logs.")
+                       "The server answered, so it is running and listening. %s" % exc,
+                       hint + " Do NOT redeploy the stack to clear this: that can destroy the "
+                              "machine identity (see deploy/anisette-stack.yml).")
     except Exception as exc:
-        return _result("Anisette server", FAIL, "Cannot reach %s" % url, str(exc),
-                       "Is the anisette container running? Check `docker ps`.")
+        # DNS, refused, timeout and TLS mean different things and need different actions.
+        text = str(exc).lower()
+        if "timed out" in text or "timeout" in text:
+            hint = ("It accepted the connection and did not answer in 10s. A server still "
+                    "provisioning against Apple does this; give it a few minutes.")
+        elif "name or service not known" in text or "nodename nor servname" in text \
+                or "getaddrinfo" in text:
+            hint = ("The HOSTNAME did not resolve -- nothing was contacted. Check the spelling in "
+                    "ALTSERVER_ANISETTE_SERVER; use 127.0.0.1 for a container on this host.")
+        elif "certificate" in text or "ssl" in text:
+            hint = "TLS failed. The server is there; its certificate is the problem."
+        else:
+            hint = ("Nothing is listening on that host and port. Is the anisette container "
+                    "running? Check `docker ps`.")
+        return _result("Anisette server", FAIL, "Cannot reach %s" % url, str(exc), hint)
 
     if status != 200:
         return _result("Anisette server", FAIL, "HTTP %s" % status, body[:200],
@@ -186,7 +212,10 @@ def check_anisette(url=None, polling=False):
         data = json.loads(body)
     except ValueError:
         return _result("Anisette server", FAIL, "Response is not JSON", body[:200],
-                       "Wrong endpoint? Some servers serve the v1 payload only at /.")
+                       "The body is quoted above; read it before changing anything. HTML here is "
+                       "usually a proxy or error page answering instead of anisette, not a wrong "
+                       "path -- the URL you set is already the root. Only if it looks like a "
+                       "different API is the endpoint worth questioning.")
 
     if not isinstance(data, dict):
         return _result("Anisette server", FAIL, "Response is not a JSON object", body[:200])
@@ -341,6 +370,50 @@ LOCKDOWN_USER_DENIED_PAIRING = -18
 LOCKDOWN_PAIRING_DIALOG_PENDING = -19
 
 
+# How idevicepair actually reports failures, verified against
+# libraries/libimobiledevice/tools/idevicepair.c rather than assumed.
+#
+# THE TRAP: pairing-stage failures are printed as WORDS WITH NO NUMBER (print_error_message,
+# :115-144), and only CONNECTION-stage failures carry "error code %d" (:409). So branching on the
+# numeric code alone -- which is what this file did first -- catches the transport case and sends
+# every genuine pairing failure into the "unrecognised, do not assume a pairing problem" branch,
+# telling the owner the opposite of the truth and giving them no action at all.
+#
+# Text first, code second. Order matters: "no device found" must beat everything, because the
+# device being gone is not a statement about pairing.
+_PAIR_PATTERNS = (
+    ("passcode",    ("because a passcode is set", "enter the passcode")),
+    ("gone",        ("no device found",)),
+    ("unpaired",    ("is not paired with this host",)),
+    ("trust",       ("accept the trust dialog",)),
+    ("denied",      ("denied the trust dialog",)),
+    ("failed",      ("pairing with device", "pairing failed")),
+    ("connection",  ("not possible over this connection",)),
+)
+
+
+def classify_pair_failure(out):
+    """What idevicepair's output actually says. One of the tags above, or 'transport'/'unknown'.
+
+    Shared by the status check and the pairing wizard so the two cannot drift: they give the
+    owner different instructions for the same condition otherwise.
+    """
+    low = (out or "").lower()
+    for tag, needles in _PAIR_PATTERNS:
+        if any(n in low for n in needles):
+            return tag
+    code = _lockdown_code(out)
+    if code in (LOCKDOWN_MUX_ERROR, LOCKDOWN_RECEIVE_TIMEOUT):
+        return "transport"
+    if code == LOCKDOWN_PAIRING_DIALOG_PENDING:
+        return "trust"
+    if code == LOCKDOWN_USER_DENIED_PAIRING:
+        return "denied"
+    if code in (LOCKDOWN_INVALID_CONF, LOCKDOWN_PAIRING_FAILED, LOCKDOWN_SSL_ERROR):
+        return "unpaired"
+    return "unknown"
+
+
 def _lockdown_code(out):
     """The numeric lockdownd code in idevicepair's output, or None."""
     m = re.search(r"error code\s+(-?\d+)", out or "")
@@ -366,48 +439,45 @@ def check_device():
         if rc == 0:
             return _result("iPhone reachability", OK, "Reachable over Wi-Fi, pairing valid",
                            "UDID %s via netmuxd%s" % (wireless[0], ", also on USB" if usb else ""))
-        if "passcode" in out.lower():
+        # Classify on the TEXT first: idevicepair prints pairing-stage failures as words with
+        # no number, so a code-only branch sends every real pairing failure to "unrecognised".
+        kind = classify_pair_failure(out)
+
+        if kind == "passcode":
             return _result("iPhone reachability", WARN, "Found over Wi-Fi, but the device is locked",
                            out.strip(), "Unlock the phone and re-check.")
-
-        # WHICH failure, not just THAT it failed. lockdownd's codes distinguish "could not reach
-        # the device" from "the device rejected this pairing", and they mean opposite things.
-        #
-        # Found by turning a phone's Wi-Fi off to test: netmuxd goes on listing the device from
-        # its stored record for a while, so idevice_id -n still returns it, idevicepair then
-        # cannot reach it, and this branch used to announce a stale pairing record and send the
-        # owner to fetch a cable, unplug, re-pair and tap Trust -- for a phone that was simply
-        # switched off. Confidently wrong advice that costs real work is worse than "unknown".
-        code = _lockdown_code(out)
-        if code in (LOCKDOWN_MUX_ERROR, LOCKDOWN_RECEIVE_TIMEOUT):
+        if kind in ("transport", "gone"):
             return _result(
                 "iPhone reachability", FAIL, "Listed over Wi-Fi, but the phone did not answer",
                 out.strip(),
-                "This is a TRANSPORT failure (lockdownd error %d), not a pairing problem -- do "
-                "NOT re-pair on account of it. netmuxd keeps listing a known device for a while "
-                "after it goes away, so this is what an asleep phone, one with Wi-Fi off, or one "
-                "off this network looks like. Check the phone first." % code)
-        if code == LOCKDOWN_PAIRING_DIALOG_PENDING:
+                "This is a TRANSPORT failure, not a pairing problem -- do NOT re-pair on account "
+                "of it. netmuxd keeps listing a known device for a while after it goes away, so "
+                "this is what an asleep phone, one with Wi-Fi off, or one off this network looks "
+                "like. Check the phone first.")
+        if kind == "trust":
             return _result("iPhone reachability", WARN, "Waiting for Trust on the phone",
                            out.strip(),
                            "The phone is showing (or has dismissed) the Trust prompt. Unlock it "
                            "and tap Trust; no re-pairing needed.")
-        if code == LOCKDOWN_USER_DENIED_PAIRING:
+        if kind == "denied":
             return _result("iPhone reachability", FAIL, "The phone refused the pairing",
                            out.strip(),
                            "Someone tapped Do Not Trust. Re-pair over USB and tap Trust.")
-        if code in (LOCKDOWN_INVALID_CONF, LOCKDOWN_PAIRING_FAILED, LOCKDOWN_SSL_ERROR):
+        if kind in ("unpaired", "failed"):
             return _result("iPhone reachability", FAIL,
                            "Found over Wi-Fi, but pairing did not validate", out.strip(),
-                           "The pairing record in /var/lib/lockdown is stale or half-written "
-                           "(lockdownd error %d). Re-pair over USB and tap Trust; back up BOTH "
-                           "files together." % code)
-        # Unrecognised: report it without inventing a cause.
+                           "The pairing record in /var/lib/lockdown is stale, half-written or for "
+                           "a different host. Re-pair over USB and tap Trust; back up BOTH files "
+                           "together.")
+        if kind == "connection":
+            return _result("iPhone reachability", FAIL,
+                           "Pairing is not possible over this connection", out.strip(),
+                           "The device will not pair over the transport in use. Pairing needs the "
+                           "cable; refreshing afterwards does not.")
         return _result("iPhone reachability", FAIL, "Found over Wi-Fi, but validation failed",
                        out.strip(),
-                       "Unrecognised lockdownd result. Do not assume a pairing problem: the "
-                       "codes that actually mean that are -2, -4 and -5. See "
-                       "libraries/libimobiledevice/include/libimobiledevice/lockdown.h.")
+                       "Unrecognised idevicepair output -- it is quoted above verbatim. This does "
+                       "not establish a pairing problem either way.")
 
     if usb:
         return _result(
@@ -423,12 +493,31 @@ def check_device():
         return _result("iPhone reachability", UNKNOWN, "idevice_id is not available here", wnote,
                        "Install libimobiledevice-utils. The container image ships it.")
 
+    # _devices_via returns None when the probe COULD NOT RUN (timeout, or no mux answered) and []
+    # when it ran and found nothing. Both are falsy, so both used to arrive at the confident
+    # "No device on either transport" below -- asserting an absent phone from a question nobody
+    # managed to ask. A dead netmuxd reads exactly like a phone that has left the house.
+    if wireless is None or usb is None:
+        which = []
+        if wireless is None:
+            which.append("netmuxd: %s" % (wnote or "did not answer"))
+        if usb is None:
+            which.append("usbmuxd: %s" % (unote or "did not answer"))
+        return _result(
+            "iPhone reachability", UNKNOWN, "Could not ask one of the transports",
+            " | ".join(which),
+            "This says NOTHING about whether the phone is present -- the question could not be "
+            "put. A netmuxd that is down or whose socket is not mounted looks identical to an "
+            "absent phone here, so check `docker ps` for netmuxd before looking for the phone. "
+            "The host's usbmuxd exiting with no cable attached is NORMAL and not a fault.")
+
     return _result(
         "iPhone reachability", FAIL, "No device on either transport",
-        "netmuxd: %s | usbmuxd: %s" % (wnote or "no device", unote or "no device"),
-        "If both say no mux is listening, nothing is serving device access at all. The host's "
-        "usbmuxd is udev-activated and exits with the cable removed, which is normal -- that is "
-        "what the netmuxd container is for.")
+        "Both muxes answered and neither has a device. netmuxd: %s | usbmuxd: %s"
+        % (wnote or "no device", unote or "no device"),
+        "The phone is asleep, off this network, or has never been paired. The host's usbmuxd is "
+        "udev-activated and exits with the cable removed, which is normal -- that is what the "
+        "netmuxd container is for.")
 
 
 def _browse(service, timeout=15):
@@ -523,36 +612,64 @@ def check_advertisement(service="_altserver._tcp"):
                    "dlopens the unversioned libdns_sd.so) and that avahi-daemon is running.")
 
 
-def check_altserver_running():
-    """Is the daemon up? Only meaningful if we can actually see its process.
+def _shares_host_pids():
+    """Can we see processes outside this container?
 
-    Each container has its own PID namespace, so from a sidecar this sees nothing no matter how
-    healthy the daemon is. Rather than report a confident false negative, say so -- and point at
-    the mDNS check, which is the trustworthy signal either way.
+    Read PID 1's command line, which answers it directly: under `pid: host` PID 1 is the host's
+    init; in our own namespace it is this web server. No ptrace needed.
+
+    The previous test asked whether /proc/1/root/usr/local/bin/AltServer existed, and had the
+    answer backwards. Under `pid: host` -- which the shipped stack uses -- PID 1 IS the host
+    init, so /proc/1/root is the host filesystem, which has no AltServer binary; it only exists
+    inside the image. So the guard fired in exactly the deployment where this check CAN see
+    everything, and a genuinely dead daemon was reported as "this check is blind". Combined with
+    the match being too loose, the check could not return FAIL at all in the shipped stack --
+    and "a verification that cannot fail is worse than none".
     """
+    try:
+        with open("/proc/1/cmdline", "rb") as fh:
+            first = fh.read(4096).split(b"\x00")[0].decode("utf-8", "replace")
+    except OSError:
+        return False
+    # Our own namespace: PID 1 is this process tree's entry point.
+    return not (first.endswith("python3") or first.endswith("python")
+                or "server.py" in first or first.endswith("/AltServer"))
+
+
+def check_altserver_running():
+    """Is the daemon up? Only meaningful if we can actually see its process."""
     rc, out = _run(["pgrep", "-af", "AltServer"])
     if rc is None:
-        return _result("AltServer process", UNKNOWN, "Could not check", out)
+        return _result("AltServer process", UNKNOWN, "Could not run pgrep", out,
+                       "Install procps. The container image ships it.")
 
-    lines = [l for l in out.splitlines() if "AltServer" in l and "pgrep" not in l
-             and "server.py" not in l]
+    # Match the BINARY, not any command line mentioning the word. `pgrep -af AltServer` also
+    # matches this web server's own install subprocess (which passes the AltServer path as an
+    # argument) and anything with AltServer.ipa on its line, so "Running" could be claimed from
+    # the very process doing the asking.
+    lines = [l for l in out.splitlines()
+             if re.search(r"(^|\s|/)AltServer(\s|$)", l)
+             and "pgrep" not in l and "server.py" not in l and ".ipa" not in l]
     if lines:
         return _result("AltServer process", OK, "Running", lines[0][:160])
 
-    if _in_container() and not os.path.exists("/proc/1/root/usr/local/bin/AltServer"):
+    if not _shares_host_pids():
         return _result(
             "AltServer process", UNKNOWN,
             "Cannot see other containers' processes from here",
-            "Containers have separate PID namespaces, so this check is blind unless the service "
-            "runs with pid: host.",
-            "Judge by the mDNS check above -- if _altserver._tcp is published, something is "
-            "advertising it and the daemon is alive.")
+            "PID 1 here is this web server, so we are in our own PID namespace and pgrep cannot "
+            "see the daemon however healthy it is. Set pid: host on this service to make this "
+            "check meaningful.",
+            "Judge by the mDNS check above: it browses for the advertisement from outside, which "
+            "is the one signal that does not depend on seeing the process.")
 
     return _result("AltServer process", FAIL, "Not running",
-                   "Nothing to discover, and no refreshes will happen.",
+                   "We share the host PID namespace and no AltServer process exists.",
                    "AltServer has no liveness signal: Listen() can fail early and the process "
                    "stays alive with no listener, so 'running' is necessary but not sufficient. "
-                   "Trust the mDNS check above over this one.")
+                   "A published advertisement does not prove the daemon is alive either -- the "
+                   "record outlives the process. Trust the mDNS check for discoverability and "
+                   "this one for liveness; they answer different questions.")
 
 
 # The checks that depend on the PHONE being present, as opposed to the server working.
@@ -683,6 +800,9 @@ def run_all(anisette_url=None, server_only=False, polling=False):
 
     rest = [_clock, check_device, check_phone_advertisement,
             check_advertisement, check_altserver_running]
+    # Positional names, so a check that raises still reports under its own heading.
+    _CHECK_NAMES = ["Clock agreement", "iPhone reachability", "iPhone is advertising",
+                    "mDNS advertisement", "AltServer process"]
 
     results = [None] * len(rest)
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(rest)) as pool:
@@ -692,8 +812,14 @@ def run_all(anisette_url=None, server_only=False, polling=False):
             try:
                 results[i] = fut.result()
             except Exception as exc:  # a broken check must not blank the page
-                results[i] = _result("Check #%d" % (i + 1), UNKNOWN,
-                                     "This check raised an exception", str(exc))
+                # Keep the check's NAME. Calling it "Check #3" breaks its row in the history
+                # timeline (which is keyed by name) and loses its device-dependent
+                # classification, so a crashed device check would start marking the container
+                # unhealthy -- the thing --server-only exists to prevent.
+                results[i] = _result(_CHECK_NAMES[i], UNKNOWN,
+                                     "This check raised an exception", str(exc),
+                                     "The other checks are unaffected. This is a bug in the "
+                                     "check itself, not necessarily a fault in what it probes.")
 
     checks = [anisette] + results
     return {"overall": verdict(checks, server_only), "checks": checks,
