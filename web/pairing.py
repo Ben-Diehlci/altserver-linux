@@ -25,6 +25,13 @@ import re
 import shutil
 import subprocess
 
+# One definition of the lockdownd result codes, imported rather than copied: two tables drift,
+# and this one decides whether the page tells someone to go and re-pair. status_checks does not
+# import this module, so there is no cycle.
+from status_checks import (LOCKDOWN_INVALID_CONF, LOCKDOWN_MUX_ERROR,
+                           LOCKDOWN_PAIRING_DIALOG_PENDING, LOCKDOWN_RECEIVE_TIMEOUT,
+                           LOCKDOWN_USER_DENIED_PAIRING, _lockdown_code)
+
 STEP_OK, STEP_TODO, STEP_BLOCKED = "ok", "todo", "blocked"
 
 
@@ -191,6 +198,48 @@ def diagnose():
                     "-- this is not a permissions problem, despite how it reads.",
         })
         return {"steps": steps, "udids": udids, "paired": False, "next": "Unlock the iPhone"}
+
+    # WHICH failure. lockdownd's codes separate "could not reach the device" from "the device
+    # is not paired", and only the second is answered by tapping Trust. Without this, a phone
+    # with its Wi-Fi off -- which netmuxd goes on listing for a while from its stored record --
+    # was told to unplug and replug a cable it does not need, to fix a pairing that was fine.
+    code = _lockdown_code(out)
+    if code in (LOCKDOWN_MUX_ERROR, LOCKDOWN_RECEIVE_TIMEOUT):
+        steps.append({
+            "title": "The phone did not answer",
+            "state": STEP_TODO,
+            "detail": out or "Listed, but unreachable.",
+            "action": "",
+            "note": "This is a TRANSPORT failure (lockdownd error %s), not a pairing one. The "
+                    "device is still listed because netmuxd remembers it for a while after it "
+                    "goes away, so this is what an asleep phone, one with Wi-Fi off, or one on "
+                    "another network looks like. Wake it and put it back on this LAN -- do NOT "
+                    "re-pair to fix this." % code,
+        })
+        return {"steps": steps, "udids": udids, "paired": False,
+                "next": "Wake the phone and put it on this network"}
+
+    if code == LOCKDOWN_PAIRING_DIALOG_PENDING:
+        steps.append({
+            "title": "Tap Trust on the iPhone",
+            "state": STEP_TODO,
+            "detail": out,
+            "action": "",
+            "note": "The Trust prompt is waiting (or was dismissed) on the device. Unlock it and "
+                    "tap Trust. No cable and no re-pairing needed.",
+        })
+        return {"steps": steps, "udids": udids, "paired": False, "next": "Tap Trust on the iPhone"}
+
+    if code == LOCKDOWN_USER_DENIED_PAIRING:
+        steps.append({
+            "title": "The phone refused the pairing",
+            "state": STEP_TODO,
+            "detail": out,
+            "action": "idevicepair pair",
+            "note": "Someone tapped Do Not Trust. Run the pair command with the phone unlocked "
+                    "and tap TRUST this time.",
+        })
+        return {"steps": steps, "udids": udids, "paired": False, "next": "Trust this computer"}
 
     steps.append({
         "title": "Trust this computer on the iPhone",

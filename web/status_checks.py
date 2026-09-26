@@ -23,6 +23,7 @@ import calendar
 import concurrent.futures
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -270,6 +271,24 @@ def _devices_via(env, flag):
     return [l.strip() for l in out.splitlines() if l.strip()], ""
 
 
+# lockdownd result codes, from libimobiledevice/include/libimobiledevice/lockdown.h. Only the
+# ones this file reasons about; the point is that -8 is a TRANSPORT failure and says nothing
+# whatever about the pairing record, which is what the check used to claim it meant.
+LOCKDOWN_INVALID_CONF = -2
+LOCKDOWN_PAIRING_FAILED = -4
+LOCKDOWN_SSL_ERROR = -5
+LOCKDOWN_RECEIVE_TIMEOUT = -7
+LOCKDOWN_MUX_ERROR = -8
+LOCKDOWN_USER_DENIED_PAIRING = -18
+LOCKDOWN_PAIRING_DIALOG_PENDING = -19
+
+
+def _lockdown_code(out):
+    """The numeric lockdownd code in idevicepair's output, or None."""
+    m = re.search(r"error code\s+(-?\d+)", out or "")
+    return int(m.group(1)) if m else None
+
+
 def check_device():
     """Is the phone reachable, and -- the part that decides unattended refresh -- over WHICH path?
 
@@ -292,10 +311,45 @@ def check_device():
         if "passcode" in out.lower():
             return _result("iPhone reachability", WARN, "Found over Wi-Fi, but the device is locked",
                            out.strip(), "Unlock the phone and re-check.")
-        return _result("iPhone reachability", FAIL, "Found over Wi-Fi, but pairing did not validate",
+
+        # WHICH failure, not just THAT it failed. lockdownd's codes distinguish "could not reach
+        # the device" from "the device rejected this pairing", and they mean opposite things.
+        #
+        # Found by turning a phone's Wi-Fi off to test: netmuxd goes on listing the device from
+        # its stored record for a while, so idevice_id -n still returns it, idevicepair then
+        # cannot reach it, and this branch used to announce a stale pairing record and send the
+        # owner to fetch a cable, unplug, re-pair and tap Trust -- for a phone that was simply
+        # switched off. Confidently wrong advice that costs real work is worse than "unknown".
+        code = _lockdown_code(out)
+        if code in (LOCKDOWN_MUX_ERROR, LOCKDOWN_RECEIVE_TIMEOUT):
+            return _result(
+                "iPhone reachability", FAIL, "Listed over Wi-Fi, but the phone did not answer",
+                out.strip(),
+                "This is a TRANSPORT failure (lockdownd error %d), not a pairing problem -- do "
+                "NOT re-pair on account of it. netmuxd keeps listing a known device for a while "
+                "after it goes away, so this is what an asleep phone, one with Wi-Fi off, or one "
+                "off this network looks like. Check the phone first." % code)
+        if code == LOCKDOWN_PAIRING_DIALOG_PENDING:
+            return _result("iPhone reachability", WARN, "Waiting for Trust on the phone",
+                           out.strip(),
+                           "The phone is showing (or has dismissed) the Trust prompt. Unlock it "
+                           "and tap Trust; no re-pairing needed.")
+        if code == LOCKDOWN_USER_DENIED_PAIRING:
+            return _result("iPhone reachability", FAIL, "The phone refused the pairing",
+                           out.strip(),
+                           "Someone tapped Do Not Trust. Re-pair over USB and tap Trust.")
+        if code in (LOCKDOWN_INVALID_CONF, LOCKDOWN_PAIRING_FAILED, LOCKDOWN_SSL_ERROR):
+            return _result("iPhone reachability", FAIL,
+                           "Found over Wi-Fi, but pairing did not validate", out.strip(),
+                           "The pairing record in /var/lib/lockdown is stale or half-written "
+                           "(lockdownd error %d). Re-pair over USB and tap Trust; back up BOTH "
+                           "files together." % code)
+        # Unrecognised: report it without inventing a cause.
+        return _result("iPhone reachability", FAIL, "Found over Wi-Fi, but validation failed",
                        out.strip(),
-                       "The pairing record in /var/lib/lockdown is stale or half-written. Re-pair "
-                       "over USB and tap Trust; back up BOTH files together.")
+                       "Unrecognised lockdownd result. Do not assume a pairing problem: the "
+                       "codes that actually mean that are -2, -4 and -5. See "
+                       "libraries/libimobiledevice/include/libimobiledevice/lockdown.h.")
 
     if usb:
         return _result(

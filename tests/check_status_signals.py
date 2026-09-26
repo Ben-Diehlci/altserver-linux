@@ -176,6 +176,103 @@ check(skewed["state"] == status_checks.FAIL,
       "a genuinely skewed clock still reports FAIL (got %r)" % skewed["state"])
 
 
+# ---- a check must not assert a CAUSE it has not established -----------------------------------
+# Found by the owner turning their phone's Wi-Fi off to test the new healthcheck. netmuxd keeps
+# listing a known device for a while after it disappears, so idevice_id still returned it,
+# idevicepair could not reach it, and the check announced "the pairing record is stale or
+# half-written. Re-pair over USB and tap Trust" -- sending someone to fetch a cable and redo a
+# pairing that was perfectly fine, for a phone that was merely switched off.
+#
+# lockdownd distinguishes these and the codes mean opposite things: -8 is MUX_ERROR, a transport
+# failure that says nothing about pairing, while -2/-4/-5 are the ones that actually do. Wrong
+# advice that costs real work is worse than saying "unknown".
+_real_run, _real_devs = status_checks._run, status_checks._devices_via
+
+
+def diagnose(pair_output):
+    """check_device() with a device listed over Wi-Fi and idevicepair returning this."""
+    status_checks._devices_via = lambda env, flag: ((["UDID0001"], "") if flag == "-n"
+                                                    else ([], "no device"))
+    status_checks._run = lambda cmd, **kw: (1, pair_output)
+    try:
+        return status_checks.check_device()
+    finally:
+        status_checks._run, status_checks._devices_via = _real_run, _real_devs
+
+
+ERR = "ERROR: Could not connect to lockdownd, error code %d"
+
+r = diagnose(ERR % -8)
+check("pairing" not in r["summary"].lower(),
+      "a transport failure (-8) is NOT reported as a pairing problem (said %r)" % r["summary"])
+check("re-pair" not in r["fix"].lower().replace("do not re-pair", ""),
+      "and it does not tell the owner to re-pair over USB")
+check("transport" in r["fix"].lower(),
+      "it names the real cause: a transport failure, i.e. the phone did not answer")
+
+r = diagnose(ERR % -19)
+check(r["state"] == status_checks.WARN and "trust" in r["summary"].lower(),
+      "a pending Trust prompt (-19) is reported as such, not as a stale record (%r)" % r["summary"])
+
+for code in (-2, -4, -5):
+    r = diagnose(ERR % code)
+    check("stale" in r["fix"].lower(),
+          "a real pairing failure (%d) DOES still advise re-pairing" % code)
+
+r = diagnose(ERR % -42)
+check("stale" not in r["fix"].lower(),
+      "an unrecognised code invents no cause (said %r)" % r["fix"][:60])
+
+r = diagnose("ERROR: Please enter the passcode on the device and retry.")
+check(r["state"] == status_checks.WARN and "locked" in r["summary"].lower(),
+      "a locked device is still reported as locked")
+
+# The PAIRING PAGE had the identical bug and is where someone actually goes to act on the advice.
+import pairing as _pairing  # noqa: E402
+
+check(_pairing.LOCKDOWN_MUX_ERROR == status_checks.LOCKDOWN_MUX_ERROR,
+      "pairing.py shares one definition of the codes rather than a second copy that can drift")
+
+
+def pair_diagnose(pair_output):
+    # _udids is nested inside diagnose(), so _run is the only seam. Dispatch on the command:
+    # a device listed over the network, nothing on USB, and the validate result under test.
+    _r = _pairing._run
+
+    def _fake(cmd, timeout=15, env=None):
+        if cmd[:1] == ["idevice_id"]:
+            # Must look like a real UDID: _udids filters on ^[0-9A-Fa-f-]{8,}$.
+            return (0, "00008130-001975AE3660001C\n") if "-n" in cmd else (0, "")
+        if cmd[:1] == ["idevicepair"]:
+            return (1, pair_output)
+        return (0, "")
+
+    # diagnose() also gates on the tools being installed, which they are not on a dev machine.
+    _w = _pairing.shutil.which
+    _pairing.shutil.which = lambda n, *a, **k: "/usr/bin/" + n
+    _pairing._run = _fake
+    try:
+        return _pairing.diagnose()
+    finally:
+        _pairing._run = _r
+        _pairing.shutil.which = _w
+
+
+try:
+    pr = pair_diagnose(ERR % -8)
+    _note = " ".join(s.get("note", "") for s in pr["steps"]).lower()
+    _next = pr.get("next", "").lower()
+    check("replug" not in _note and "cable" not in _next,
+          "the pairing page does not send you for a cable when the phone is merely unreachable")
+    check("transport" in _note,
+          "it names the transport failure instead (next: %r)" % pr.get("next"))
+    pr = pair_diagnose(ERR % -19)
+    check("trust" in pr.get("next", "").lower(),
+          "a pending Trust prompt still says to tap Trust")
+except Exception as _exc:      # pairing.diagnose touches more of the host than check_device
+    check(False, "pairing.py diagnosis could not be exercised: %s" % _exc)
+
+
 if failures:
     print("\n%d check(s) failed:" % len(failures), file=sys.stderr)
     for f in failures:
