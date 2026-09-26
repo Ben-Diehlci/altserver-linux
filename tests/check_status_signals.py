@@ -247,19 +247,38 @@ def pair_diagnose(pair_output):
             return (1, pair_output)
         return (0, "")
 
-    # diagnose() also gates on the tools being installed, which they are not on a dev machine.
-    _w = _pairing.shutil.which
+    # EVERY host dependency in diagnose() must be pinned, or this test reports whatever the
+    # machine happens to look like. It first shipped patching only which() and _run(), and
+    # passed on macOS purely because /var/run/usbmuxd EXISTS there -- on the Linux CI runner it
+    # does not, diagnose() returned early at that step, and the guard failed. A test that
+    # depends on undeclared host state is not a test; it is a coin flip that happened to land.
+    _w, _e = _pairing.shutil.which, _pairing.os.path.exists
     _pairing.shutil.which = lambda n, *a, **k: "/usr/bin/" + n
+    _pairing.os.path.exists = lambda path: True if path == "/var/run/usbmuxd" else _e(path)
     _pairing._run = _fake
     try:
         return _pairing.diagnose()
     finally:
         _pairing._run = _r
         _pairing.shutil.which = _w
+        _pairing.os.path.exists = _e
+
+
+def reached_pairing(pr):
+    """Did diagnose() actually get as far as the pairing step, or bail at an earlier gate?
+
+    Without this the assertions below silently grade whatever early-return they happened to
+    reach. That is exactly how the first version passed on macOS and failed in CI: it bailed at
+    the usbmuxd-socket step and the test read the wrong branch's text as a feature failure.
+    """
+    return any("detected" in s.get("title", "").lower() for s in pr.get("steps", []))
 
 
 try:
     pr = pair_diagnose(ERR % -8)
+    check(reached_pairing(pr),
+          "the pairing test reaches the pairing step (it bailed at %r, so the assertions below "
+          "would be grading the wrong branch)" % pr.get("next"))
     _note = " ".join(s.get("note", "") for s in pr["steps"]).lower()
     _next = pr.get("next", "").lower()
     check("replug" not in _note and "cable" not in _next,
