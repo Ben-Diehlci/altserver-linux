@@ -117,6 +117,15 @@ jobs:
       - name: Editing a rewriter actually rebuilds what it generates
         run: python3 tests/check_rewriter_deps.py
 
+      # Fixing the HTTP and exit-code signals left them with no listener: nothing in the
+      # deployment ran status_checks.py or polled /api/status, and no service declared a
+      # healthcheck, so Docker computed no health state and Portainer had no column to show one
+      # in. Three more places reported a healthy, idle server while broken.
+      - name: A broken deployment can be seen to be broken
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 tests/check_observability.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"

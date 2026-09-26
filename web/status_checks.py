@@ -435,8 +435,17 @@ def run_all(anisette_url=None):
 
 
 if __name__ == "__main__":
-    # Exits non-zero when something is wrong, so this is usable from cron or a monitoring agent
-    # without parsing the JSON. See EXIT_CODES.
+    # Exits non-zero when something is wrong, so this is usable from cron, a Docker healthcheck or
+    # a monitoring agent without parsing the JSON. See EXIT_CODES.
+    #
+    # -q prints ONE line naming what is wrong instead of the full JSON. Docker keeps only the last
+    # 5 healthcheck outputs and truncates each to 4KB, so the full document would be clipped
+    # mid-object and tell an operator running `docker inspect` nothing useful.
+    _quiet = "-q" in sys.argv[1:] or "--quiet" in sys.argv[1:]
     _result = run_all()
-    print(json.dumps(_result, indent=2))
+    if _quiet:
+        _bad = [c["name"] for c in _result["checks"] if c["state"] in (FAIL, WARN, UNKNOWN)]
+        print("%s%s" % (_result["overall"], (": " + ", ".join(_bad)) if _bad else ""))
+    else:
+        print(json.dumps(_result, indent=2))
     sys.exit(exit_code(_result["overall"]))

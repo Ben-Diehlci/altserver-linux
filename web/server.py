@@ -29,6 +29,7 @@ should not be exposed to the LAN, and never to the internet.
 import argparse
 import json
 import os
+import time
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -183,7 +184,7 @@ async function pollLog(){
     const atBottom = logOut.scrollTop + logOut.clientHeight >= logOut.scrollHeight - 30;
     logOut.hidden = false;
     logOut.textContent = d.lines.length ? d.lines.join(String.fromCharCode(10)) : '(log is empty)';
-    logState.textContent = d.lines.length + ' line(s) \u2014 watching';
+    logState.textContent = d.lines.length + ' line(s) - watching';
     if (atBottom) { logOut.scrollTop = logOut.scrollHeight; }
   } catch (e) {
     logState.textContent = 'Could not read the log.';
@@ -245,7 +246,7 @@ async function load(){
   try{
     const d = await (await fetch('/api/pairing',{cache:'no-store'})).json();
     document.getElementById('when').textContent =
-      d.paired ? 'Paired \u2713' : ('Next: ' + (d.next||''));
+      d.paired ? 'Paired OK' : ('Next: ' + (d.next||''));
     document.getElementById('steps').innerHTML = d.steps.map((s,i) => `
       <div class="card ${PILL[s.state]||'unknown'}">
         <div class="row">
@@ -275,7 +276,7 @@ INSTALL_PAGE = PAGE[:PAGE.index("<body>")].replace(
 <div class="wrap">
   <header>
     <h1>Install AltStore</h1>
-    <div class="meta"><span id="state">\u2026</span></div>
+    <div class="meta"><span id="state">...</span></div>
   </header>
 
   <div class="card" id="warnbox">
@@ -288,7 +289,7 @@ INSTALL_PAGE = PAGE[:PAGE.index("<body>")].replace(
 
   <form id="f" class="card" onsubmit="return start(event)">
     <label>Device UDID<br><input name="udid" id="udid" style="width:100%;padding:.45rem;margin:.3rem 0 .25rem"
-      placeholder="detecting\u2026" required></label>
+      placeholder="detecting..." required></label>
     <div id="udidnote" class="meta" style="display:none;margin-bottom:.7rem"></div>
     <label>Apple ID<br><input name="apple_id" type="email" style="width:100%;padding:.45rem;margin:.3rem 0 .7rem" required></label>
     <label>Password<br><input name="password" type="password" style="width:100%;padding:.45rem;margin:.3rem 0 .7rem" required></label>
@@ -351,7 +352,7 @@ async function poll(){
   try{
     const d = await (await fetch('/api/install/status',{cache:'no-store'})).json();
     document.getElementById('state').textContent =
-      d.state + (d.elapsed ? ' \u00b7 ' + d.elapsed + 's' : '');
+      d.state + (d.elapsed ? ' - ' + d.elapsed + 's' : '');
     document.getElementById('tfa').style.display = d.state === 'awaiting_2fa' ? '' : 'none';
     document.getElementById('logbox').style.display = d.lines.length ? '' : 'none';
     const log = document.getElementById('log');
@@ -373,12 +374,12 @@ async function fillUdid(){
       if (!el.value) el.value = d.udids[0];        // never clobber something typed by hand
       note.textContent = d.paired
         ? 'Detected and paired.'
-        : 'Detected, but the pairing is not valid \u2014 the install will fail until it is.';
+        : 'Detected, but the pairing is not valid - the install will fail until it is.';
       note.style.display = '';
-      if (!d.paired) note.innerHTML += ' <a href="/pairing">Fix pairing \u2192</a>';
+      if (!d.paired) note.innerHTML += ' <a href="/pairing">Fix pairing -></a>';
     } else {
       el.placeholder = 'no device detected';
-      note.innerHTML = 'No device is connected. <a href="/pairing">Pair your iPhone first \u2192</a>';
+      note.innerHTML = 'No device is connected. <a href="/pairing">Pair your iPhone first -></a>';
       note.style.display = '';
     }
   }catch(e){
@@ -455,7 +456,16 @@ class Handler(BaseHTTPRequestHandler):
                         f.seek(size - 200_000)
                         f.readline()
                     lines = f.read().splitlines()[-400:]
-                data = {"lines": lines, "available": True, "path": path_log}
+                # mtime and its age, because a FROZEN log is indistinguishable from a quiet
+                # server otherwise. If the redaction filter dies or its tee is disabled, this
+                # file simply stops growing while stdout keeps flowing, and the panel goes on
+                # rendering the same last lines forever -- which looks exactly like an idle
+                # server, during the incident when this is the first thing anyone opens.
+                mtime = os.path.getmtime(path_log)
+                age = max(0, int(time.time() - mtime))
+                data = {"lines": lines, "available": True, "path": path_log,
+                        "mtime": int(mtime), "age_seconds": age,
+                        "stale": age > 3600}
             except FileNotFoundError:
                 data = {"lines": [], "available": False, "path": path_log,
                         "why": "No log yet at %s. It appears once AltServer has written a line; "

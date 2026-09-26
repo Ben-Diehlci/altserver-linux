@@ -30,7 +30,14 @@ fi
 #
 # Fail open: if python3 or the filter is missing, log unfiltered rather than not at all. A server
 # you cannot debug is worse than a credential in a log you already had.
-if [ -x /usr/local/bin/redact-log ] && command -v python3 >/dev/null 2>&1; then
+# The third test ACTUALLY RUNS the filter. The first two are a file-existence and a PATH check,
+# which say nothing about whether it can execute -- a broken interpreter, a missing module after
+# an image change, or an OOM at start would all pass them and then silently take every log line
+# with them. AltServer ignores SIGPIPE, so once the filter is gone its writes return EPIPE and are
+# DISCARDED: the container stays Up, answers normally, and `docker logs` produces nothing from
+# that moment on. An empty log reads as "quiet server" rather than "logging died on Tuesday".
+if [ -x /usr/local/bin/redact-log ] && command -v python3 >/dev/null 2>&1 \
+   && printf 'entrypoint: redaction filter probe\n' | /usr/local/bin/redact-log >/dev/null 2>&1; then
     # --tee also appends to the shared volume so the web UI can show a live view without
     # the Docker socket. Everything written there has already been redacted.
     exec 1> >(exec /usr/local/bin/redact-log --tee /data/altserver.log)

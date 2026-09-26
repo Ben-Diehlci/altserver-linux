@@ -40,6 +40,27 @@ services:
   anisette:
     image: dadoum/anisette-v3-server@sha256:1e20384985d3c49965f444bef39d627768dacc39ea0dca91f2a535edb7591ba3
     container_name: anisette
+
+    # NOTE ON ALL HEALTHCHECKS IN THIS FILE. Plain Compose (and Portainer) NEVER restarts an
+    # unhealthy container -- that is Swarm. These exist so a failure is VISIBLE: Portainer shows a
+    # health badge, and `docker inspect` carries the reason. Without any healthcheck Docker
+    # computes no health state at all, so the dashboard is structurally incapable of showing a
+    # problem, which is how 2026-09-22 ran for three days with everything reading "Up".
+    healthcheck:
+      # Deliberately /v3/client_info and NOT "/". The v1 route at "/" performs REAL provisioning
+      # against Apple whenever the machine is not yet provisioned, so a polling healthcheck on "/"
+      # would hammer Apple's endpoint at exactly the moment your identity volume has gone missing
+      # -- turning a restore-the-backup incident into rate-limit / account-lock territory.
+      # /v3/client_info is static and makes no Apple contact.
+      # CHANGE ONLY IF: the container reports "unhealthy" immediately. The April-2025 image may
+      # not ship curl -- check with `docker exec anisette curl --version`. If curl is missing,
+      # DELETE this block; do not switch it to "/".
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:6969/v3/client_info"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      # First run downloads the Apple Music APK and provisions against Apple. Minutes.
+      start_period: 5m
     restart: unless-stopped
     logging:
       driver: json-file
@@ -99,6 +120,15 @@ services:
   netmuxd:
     image: ghcr.io/ben-diehlci/altserver-linux:latest
     container_name: netmuxd
+
+    healthcheck:
+      # The socket is the entire product of this container. If it is gone, AltServer cannot reach
+      # the phone over Wi-Fi at all, and nothing else reports that.
+      test: ["CMD", "test", "-S", "/run/muxd/usbmuxd"]
+      interval: 2m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
     # REQUIRED. mDNS is link-local multicast and does not cross a Docker bridge, so on a bridge
@@ -152,6 +182,21 @@ services:
     #     BUILDER: ghcr.io/ben-diehlci/altserver_builder_alpine_${ALTSERVER_BUILD_ARCH:-amd64}
     #     TARGETARCH: ${ALTSERVER_TARGETARCH:-amd64}
     container_name: altserver
+
+    healthcheck:
+      # Browse for our OWN advertisement, which is the only honest test -- AltServer cannot detect
+      # its own registration failing (see dnssd_loader.cpp). This is the exact condition that went
+      # unnoticed for three days.
+      #
+      # The timings are chosen to sit OUTSIDE the watchdog's recovery window, not inside it: the
+      # watchdog needs two consecutive misses at ALTSERVER_MDNS_RECHECK_SECONDS (default 60s) to
+      # re-register, so 2m x 3 retries = 6 minutes before this reports unhealthy. Anything tighter
+      # would flag the outage the watchdog is already in the middle of repairing.
+      test: ["CMD-SHELL", "avahi-browse -rpt _altserver._tcp | grep -q '^='"]
+      interval: 2m
+      timeout: 20s
+      retries: 3
+      start_period: 90s
     restart: unless-stopped
     depends_on:
       - anisette
@@ -288,6 +333,22 @@ services:
   altserver-web:
     image: ghcr.io/ben-diehlci/altserver-linux:latest
     container_name: altserver-web
+
+    healthcheck:
+      # This is ALSO what finally runs the checks periodically. Before it, status_checks.py
+      # executed only inside a browser's HTTP GET, so the verdict existed solely in the instant
+      # someone happened to open the page.
+      #
+      # -q prints one line naming what is wrong (Docker truncates healthcheck output to 4KB, so
+      # the full JSON would be clipped mid-object). Exit codes are Nagios: 0 OK, 1 WARNING,
+      # 2 CRITICAL -- so a WARN marks the container unhealthy too. That is deliberate: "I cannot
+      # tell" must not look like "fine". retries: 3 absorbs a transient probe failure.
+      test: ["CMD", "python3", "/opt/altserver-web/status_checks.py", "-q"]
+      interval: 5m
+      timeout: 120s
+      retries: 3
+      # The device and anisette probes need the rest of the stack up first.
+      start_period: 3m
     restart: unless-stopped
     init: true
     logging:

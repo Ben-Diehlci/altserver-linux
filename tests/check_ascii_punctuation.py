@@ -24,6 +24,7 @@ upstream's own text never reaches this check. Patches to vendored sources belong
 scripts anyway.
 """
 
+import ast
 import os
 import subprocess
 import sys
@@ -50,6 +51,12 @@ SUGGESTIONS = {
     "\u2022": "*",     # bullet
     "\u00b7": "*",
 }
+
+# Python files whose string literals may legitimately EVALUATE to non-ASCII. This file is the
+# only one: its SUGGESTIONS table above is by definition a list of the characters to reject, and
+# writing the keys as \uXXXX escapes keeps the file itself ASCII on disk while the values it
+# compares against are not.
+VALUE_ALLOW = {"tests/check_ascii_punctuation.py"}
 
 # Files that genuinely need a non-ASCII byte. Empty, and should stay that way; a real case would
 # be something like a UTF-8 encoding test fixture. Add the path here with a comment saying why.
@@ -101,6 +108,41 @@ def main():
 
     if skipped_binary:
         print("Skipped %d binary file(s): %s" % (len(skipped_binary), ", ".join(skipped_binary)))
+
+    # SECOND PASS: what the strings EVALUATE to, not what the file contains.
+    #
+    # The byte scan above is necessary and not sufficient. `\u2014` written in a Python source is
+    # six ASCII characters on disk and a real em dash at runtime, so eight of them sat in
+    # web/server.py's page markup -- in link text, a placeholder and a status line -- passing this
+    # guard while rendering non-ASCII to every visitor. The bytes were clean; the PAGE was not.
+    for rel in tracked_files():
+        if not rel.endswith(".py") or rel in VALUE_ALLOW or rel in ALLOW:
+            continue
+        path = os.path.join(ROOT, rel)
+        if not os.path.exists(path):
+            continue
+        try:
+            tree = ast.parse(open(path, encoding="utf-8").read())
+        except SyntaxError as exc:
+            problems.append("%s: does not parse (%s)" % (rel, exc))
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            for ch in node.value:
+                if ord(ch) < 128:
+                    continue
+                try:
+                    name = unicodedata.name(ch)
+                except ValueError:
+                    name = "unnamed"
+                fix = SUGGESTIONS.get(ch)
+                problems.append(
+                    "%s:%d: a string literal EVALUATES to U+%04X %s%s\n"
+                    "      The file is ASCII on disk, but this reaches the user as a non-ASCII\n"
+                    "      character. Check for a \\uXXXX escape."
+                    % (rel, node.lineno, ord(ch), name,
+                       (" -- write %r instead" % fix) if fix else ""))
 
     if problems:
         print("Non-ASCII characters in tracked text files:\n", file=sys.stderr)

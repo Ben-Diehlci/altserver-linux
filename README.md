@@ -339,6 +339,13 @@ of a dead deployment is an app that will not open, a week later.
   | `GET /api/status` | `200` | **`503`** when any check fails |
   | `python3 status_checks.py` | exits `0` | exits `2` (`1` = degraded) |
 
+  **You do not have to set any of this up.** Every service in the stack now declares a
+  healthcheck, so Portainer shows a health badge with no external tooling at all, and the
+  `altserver-web` check is what runs `status_checks.py` on a schedule (every 5 minutes) -- until
+  it existed, nothing ran the checks except a browser loading the page. Note that plain Compose
+  never RESTARTS an unhealthy container; that is Swarm. The health state is for the dashboard and
+  for any poller you add.
+
   Exit codes follow the Nagios plugin convention, so a monitoring agent understands them as-is.
   One caveat worth knowing: **a degraded result stays HTTP 200**, including the case where the
   mDNS check cannot run at all. Over the status code alone that is indistinguishable from health,

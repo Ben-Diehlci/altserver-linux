@@ -84,7 +84,19 @@ def _trim(tee):
 def main():
     out = sys.stdout
     tee = _open_tee()
-    n = 0
+    n = 0            # successful tee writes, which drives the trim cadence
+    seen = 0         # lines seen, which drives the retry cadence
+    tee_failures = 0
+    tee_retry_at = 0
+    # A line in the tee at startup, so the file always has a FRESH mtime when the filter is
+    # healthy. That is what makes /api/logs able to say "last write 6 days ago" instead of
+    # presenting a frozen file as the live view it advertises itself to be.
+    if tee is not None:
+        try:
+            tee.write("redact-log: filter started, teeing to %s\n" % TEE_PATH)
+            tee.flush()
+        except Exception:
+            pass
     for line in sys.stdin:
         line = line.rstrip("\n")
         if _redact is None:
@@ -98,6 +110,22 @@ def main():
                 continue  # _redact drops pure noise, e.g. the SRP "Byte:-42" spew
         out.write(shown + "\n")
         out.flush()  # unbuffered: `docker logs -f` must stay live
+        seen += 1
+
+        # `seen`, NOT `n`. n counts SUCCESSFUL tee writes, so it stops advancing the moment the
+        # tee is disabled -- which made the first version of this retry unreachable dead code:
+        # the condition it waited for could never become true again. Caught by exercising a
+        # failing tee in tests/check_observability.py; a grep for the variable name passed it.
+        if tee is None and tee_failures and seen >= tee_retry_at:
+            # Back off rather than hammering a full disk, but DO come back: the conditions that
+            # break a tee (ENOSPC, a remount, a replaced file) are usually transient.
+            tee = _open_tee()
+            if tee is not None:
+                sys.stderr.write("redact-log: tee to %s recovered\n" % TEE_PATH)
+                tee_failures = 0
+            else:
+                tee_failures += 1
+                tee_retry_at = seen + min(200 * tee_failures, 5000)
 
         if tee is not None:
             try:
@@ -106,8 +134,26 @@ def main():
                 n += 1
                 if n % 200 == 0:
                     tee = _trim(tee)
-            except Exception:
-                tee = None  # never let the tee break the primary output path
+            except Exception as exc:
+                # Never let the tee break the primary output path -- but do not vanish either.
+                # This used to set tee = None silently and never retry, so a full volume or a
+                # permissions change froze /data/altserver.log for the life of the container
+                # while stdout kept flowing. `docker logs` and the web UI's log panel then
+                # disagreed, and neither said so. The panel keeps rendering the same last lines,
+                # which look exactly like a quiet, healthy server.
+                #
+                # stderr still reaches `docker logs`: the entrypoint's `exec 2>&1` happens AFTER
+                # this process-substitution child has inherited the original fd 2.
+                tee_failures += 1
+                if tee_failures == 1:
+                    sys.stderr.write("redact-log: tee to %s failed (%s); retrying\n"
+                                     % (TEE_PATH, exc))
+                try:
+                    tee.close()
+                except Exception:
+                    pass
+                tee = None
+                tee_retry_at = seen + min(200 * tee_failures, 5000)
 
 
 if __name__ == "__main__":

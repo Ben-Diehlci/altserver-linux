@@ -17,6 +17,7 @@ Stdlib only -- python3 is already a hard requirement of this image for the Bonjo
 import argparse
 import json
 import os
+import time
 import sys
 import tempfile
 import urllib.request
@@ -63,6 +64,24 @@ def verify(path):
     return bundles[0]
 
 
+# sysexits.h EX_TEMPFAIL. A non-zero the caller is expected to survive, distinct from the
+# SystemExit above, which means there is no usable IPA at all.
+EX_TEMPFAIL = 75
+
+
+def _stamp_check_failure(stamp_path, exc):
+    """Record WHEN the last catalogue check failed, so repeated fail-open becomes visible.
+
+    Without this, every failure looks like the first one. A status check can compare this
+    against the last success and report a version that has been silently frozen for weeks.
+    """
+    try:
+        with open(stamp_path + ".lastfail", "w") as fh:
+            fh.write("%d %s\n" % (int(time.time()), exc))
+    except OSError:
+        pass   # best effort; never let bookkeeping break the start path
+
+
 def main():
     ap = argparse.ArgumentParser(description="Fetch the current AltStore IPA")
     ap.add_argument("--dest", default=os.environ.get("ALTSTORE_IPA_PATH", "/data/AltStore.ipa"))
@@ -78,8 +97,19 @@ def main():
     except Exception as exc:
         # Do not fail the container start over this: an existing IPA is better than no server.
         if os.path.exists(args.dest):
+            # EX_TEMPFAIL, NOT 0. The entrypoint wraps this call in `if ! fetch-altstore` purely
+            # to warn on failure, and returning 0 here made that handler unreachable -- on the
+            # overwhelmingly common path, since any server that has run before has an IPA. The
+            # only trace was this stdout line, interleaved with AltServer's info-level flood and
+            # then rotated away by the stack's 10m/3-file log cap. The IPA could stay pinned at
+            # an ever-older version indefinitely, discovered only when a first-time install
+            # produced an AltStore too old for the device's iOS.
+            #
+            # Non-zero here is a WARNING, not a fatal: docker-entrypoint.sh deliberately
+            # continues. Refreshes of installed apps do not need the file at all.
             print("could not check for updates (%s); keeping the existing %s" % (exc, args.dest))
-            return 0
+            _stamp_check_failure(stamp_path, exc)
+            return EX_TEMPFAIL
         raise SystemExit("could not resolve the AltStore download URL: %s" % exc)
 
     have = None

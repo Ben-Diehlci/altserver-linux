@@ -1346,18 +1346,60 @@ cannot fail is worse than none. Fixing the swallow also repaired a message that 
 the fallback used to say "No anisette timestamp to compare against" when one was present, and
 "resolves itself once the anisette check above succeeds" when that check was already succeeding.
 
-**STILL OPEN, from the same sweep:**
+**ALL FOUR REMAINING ITEMS FIXED 2026-09-25.** Guarded by `tests/check_observability.py`
+(19 assertions, 14 mutants).
 
-1. **No healthcheck on any service** (`deploy/altserver-stack.yml`), so nothing consumes the
-   status signals. Docker will not restart an unhealthy container anyway, but Portainer renders a
-   health badge, which is passive visibility in a UI the operator already uses. Deferred pending
-   a decision on whether an external uptime monitor exists.
-2. **`fetch_altstore` fails open on a catalogue error and returns 0**, making the entrypoint's own
-   "could not refresh the AltStore IPA" warning unreachable.
-3. **The redaction filter is a child nobody waits on** (`docker/docker-entrypoint.sh`). If it
-   dies, all logging silently ends and an empty `docker logs` reads as a quiet, healthy server.
-   `docker/redact-log.py` separately disables its tee on the first write error and never retries,
-   so the web log panel freezes on stale lines that look like an idle server.
+1. **Healthchecks on all four services.** Plain Compose and Portainer never RESTART an unhealthy
+   container -- that is Swarm -- so these exist to make failure VISIBLE. Without any healthcheck
+   Docker computes no health state at all, which is why the dashboard was structurally incapable
+   of showing the 09-22 outage. The altserver probe browses for its own advertisement, the only
+   honest test; its window (2m x 3 = 6 minutes) deliberately OUTLASTS the watchdog's recovery
+   (2 x 60s), so it cannot flag an outage already being repaired. anisette's healthcheck was
+   restored from `deploy/anisette-stack.yml`, where it had existed all along for the same image
+   -- and it must keep hitting `/v3/client_info`, never `/`, because the v1 route performs REAL
+   provisioning against Apple and a polling healthcheck on it would hammer Apple's endpoint at
+   exactly the moment an identity volume has gone missing.
+
+   **The altserver-web healthcheck is also what finally RUNS the checks on a schedule.** Until
+   now `status_checks.py` executed only inside a browser's HTTP GET, so the verdict existed
+   solely in the instant somebody opened the page -- which meant the 503 and Nagios exit codes
+   added earlier the same day had no listener at all, in any deployment. `-q` prints one line
+   naming what is wrong, because Docker truncates healthcheck output to 4KB and the full JSON
+   would be clipped mid-object.
+
+2. **`fetch_altstore` returns EX_TEMPFAIL (75), not 0.** The entrypoint wraps the call in
+   `if ! fetch-altstore` purely to warn, and returning 0 made that handler unreachable on the
+   common path -- any server that has run before has an IPA. It also now records
+   `AltStore.ipa.version.lastfail`, so repeated fail-open is datable rather than looking like a
+   first occurrence every time.
+
+3. **The entrypoint EXERCISES the log filter** instead of stat-ing it: it pipes a probe line
+   through `redact-log` before committing to the redirect. `[ -x ... ]` says nothing about
+   whether a thing can execute, and AltServer ignores SIGPIPE, so a filter that failed to start
+   took every log line with it while the container stayed Up and answering.
+
+4. **`redact-log` reports and retries a failed tee.** It used to set `tee = None` silently and
+   never reopen, so a full volume froze `/data/altserver.log` for the life of the container while
+   stdout kept flowing; `docker logs` and the web log panel then disagreed and neither said so.
+   `/api/logs` now also reports `mtime`, `age_seconds` and `stale`, because a frozen log is
+   otherwise indistinguishable from a quiet server -- and the log panel is the first thing anyone
+   opens during an incident.
+
+   **The first version of this retry was dead code**, and the way that was found is the point:
+   `tee_retry_at` was compared against `n`, which counts only SUCCESSFUL tee writes and therefore
+   stops advancing the instant the tee is disabled, so the condition could never become true
+   again. A guard that grepped the source for `tee_failures` passed it happily. Replacing that
+   with a test that actually drives `main()` against a tee which raises ENOSPC caught it
+   immediately. Grep-shaped assertions do not catch behaviour; this file has now been bitten by
+   that twice.
+
+**Also found, and it is a hole in our own guard.** `tests/check_ascii_punctuation.py` scanned
+file BYTES, and `\u2014` in a Python source is six ASCII characters on disk and a real em dash at
+runtime. Eight such escapes sat in `web/server.py`'s page markup -- two em dashes, two ellipses,
+two arrows, a check mark and a middle dot -- in link text, a placeholder and a status line. The
+files were ASCII; the PAGE served to every visitor was not, and the guard reported clean
+throughout. It now makes a second pass with `ast`, checking what every string literal EVALUATES
+to, with the guard's own mapping table the single documented exemption.
 
 ## Repository audit, 2026-09-15
 
