@@ -282,6 +282,45 @@ check("nothing answered" in r["summary"].lower() or "cannot reach" in r["summary
       "a genuine transport failure IS still reported as unreachable (said %r)" % r["summary"])
 
 
+# ---- the polled path must still be able to check the clock ----------------------------------
+# Switching the polled probe to the static route (so it stops provisioning against Apple) removed
+# the X-Apple-I-Client-Time it used to carry, so check_clock had nothing to compare against, went
+# permanently UNKNOWN, dragged the verdict to WARN, and marked the container unhealthy forever.
+# Observed in production as a health badge stuck on "starting" with "warn: Clock agreement" on
+# every probe. The HTTP Date header is the same host's clock and costs nothing.
+check(status_checks._http_date_to_iso("Sun, 26 Sep 2026 11:08:36 GMT") == "2026-09-26T11:08:36",
+      "an HTTP Date header parses to the timestamp check_clock expects")
+check(status_checks._http_date_to_iso(None) is None, "a missing Date header is None, not a crash")
+check(status_checks._http_date_to_iso("not a date") is None, "and so is an unparseable one")
+
+
+class _Resp:
+    status = 200
+    headers = {"Date": "Sun, 26 Sep 2026 11:08:36 GMT"}
+
+    def read(self, n=None):
+        return b"{}"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+_ru = status_checks.urllib.request.urlopen
+status_checks.urllib.request.urlopen = lambda *a, **k: _Resp()
+try:
+    _polled = status_checks.check_anisette("http://127.0.0.1:6969", polling=True)
+finally:
+    status_checks.urllib.request.urlopen = _ru
+check(_polled.get("anisette_time") == "2026-09-26T11:08:36",
+      "the polled anisette check carries the server's clock forward (got %r)"
+      % _polled.get("anisette_time"))
+check(status_checks.check_clock(_polled.get("anisette_time"))["state"] != status_checks.UNKNOWN,
+      "so the clock check can still run on a timer without fetching the provisioning route")
+
+
 # ---- a check must not assert a CAUSE it has not established -----------------------------------
 # Found by the owner turning their phone's Wi-Fi off to test the new healthcheck. netmuxd keeps
 # listing a known device for a while after it disappears, so idevice_id still returned it,

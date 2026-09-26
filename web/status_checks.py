@@ -21,6 +21,8 @@ checks exist to turn that into something visible.
 
 import calendar
 import concurrent.futures
+import datetime
+import email.utils
 import json
 import os
 import re
@@ -103,6 +105,29 @@ def _run(cmd, timeout=10, env=None):
         return None, "%s could not be run: %s" % (cmd[0], exc)
 
 
+def _http_date_to_iso(value):
+    """An HTTP Date header as the UTC timestamp check_clock expects, or None.
+
+    RFC 9110 requires an origin server with a clock to send this on every response, so it is a
+    free reading of the anisette host's clock -- the thing that actually breaks sign-in, since
+    Linux forwards that server's timestamp to Apple verbatim.
+    """
+    if not value:
+        return None
+    try:
+        dt = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if dt is None:
+        return None
+    try:
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S")
+    except (ValueError, OverflowError):
+        return None
+
+
 def check_anisette(url=None, polling=False):
     """Fetch anisette data and validate it against the client's actual contract.
 
@@ -142,10 +167,19 @@ def check_anisette(url=None, polling=False):
                     urllib.request.Request(probe, headers={"User-Agent": "Xcode"}),
                     timeout=10) as resp:
                 if resp.status == 200:
-                    return _result(
+                    # The Date header IS the anisette host's clock, and every origin server
+                    # sends one. Without it check_clock had nothing to compare against, went
+                    # permanently UNKNOWN on the polled path, and dragged the verdict to WARN --
+                    # which marks the container unhealthy forever. Measured for free, with no
+                    # Apple contact, which was the whole point of probing the static route.
+                    stamp = _http_date_to_iso(resp.headers.get("Date"))
+                    res = _result(
                         "Anisette server", OK, "Reachable (field contract not checked on a timer)",
                         "Probed %s, which makes no Apple contact. The full ten-field check runs "
                         "when the status page is opened." % probe)
+                    if stamp:
+                        res["anisette_time"] = stamp
+                    return res
                 return _result("Anisette server", FAIL, "HTTP %s from %s" % (resp.status, probe),
                                "Reachable but unhealthy.", "Check the anisette container's logs.")
         except urllib.error.HTTPError as exc:
