@@ -130,6 +130,49 @@ check(any(c["name"] in _sc.DEVICE_DEPENDENT for c in _out["checks"]),
       "and they still appear in the result for the page to show")
 
 
+# ---- nothing on a timer may fetch the anisette route that provisions against Apple ---------
+# deploy/anisette-stack.yml:62-73 refuses to point even a healthcheck at the bare root: it is the
+# v1 data route, and on a server whose machine identity is missing it performs REAL PROVISIONING
+# against Apple. Polling it turns a restore-the-backup incident into rate-limit / account-lock
+# territory.
+#
+# That was harmless while the checks ran only when a human opened the page. It stopped being
+# harmless when the altserver-web healthcheck began running them every five minutes -- which this
+# session introduced, and which is how the hazard got in.
+_fetched = []
+_real_urlopen = _sc.urllib.request.urlopen
+
+
+def _capture(req, timeout=None):
+    _fetched.append(getattr(req, "full_url", str(req)))
+    raise OSError("probe intercepted")
+
+
+_sc.urllib.request.urlopen = _capture
+try:
+    _fetched.clear()
+    _sc.check_anisette("http://127.0.0.1:6969", polling=True)
+    _polled = list(_fetched)
+    _fetched.clear()
+    _sc.check_anisette("http://127.0.0.1:6969", polling=False)
+    _paged = list(_fetched)
+finally:
+    _sc.urllib.request.urlopen = _real_urlopen
+
+check(all(u.rstrip("/") != "http://127.0.0.1:6969" for u in _polled),
+      "a POLLED anisette check never fetches the bare root, which provisions against Apple "
+      "(fetched %s)" % _polled)
+check(any("/v3/client_info" in u for u in _polled),
+      "it probes the static route instead (fetched %s)" % _polled)
+check(any(u.rstrip("/") == "http://127.0.0.1:6969" for u in _paged),
+      "a human opening the page still gets the real field-contract fetch (fetched %s)" % _paged)
+
+# And the CLI must treat a healthcheck invocation as polling, or the guard above is decorative.
+_src = open(os.path.join(ROOT, "web", "status_checks.py"), encoding="utf-8").read()
+check("_polling = _record or _server_only" in _src,
+      "--record / --server-only imply polling, so the compose healthcheck cannot fetch the root")
+
+
 # ---- the history must record, bound itself, and never fail silently ------------------------
 import tempfile as _tf  # noqa: E402
 

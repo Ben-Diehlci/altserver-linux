@@ -103,8 +103,24 @@ def _run(cmd, timeout=10, env=None):
         return None, "%s could not be run: %s" % (cmd[0], exc)
 
 
-def check_anisette(url=None):
-    """Fetch anisette data and validate it against the client's actual contract."""
+def check_anisette(url=None, polling=False):
+    """Fetch anisette data and validate it against the client's actual contract.
+
+    polling=True makes this SAFE TO RUN ON A TIMER, and that is not a performance concern.
+
+    This function fetches the BARE ROOT of the anisette server, which is the v1 data route. On a
+    server whose machine identity is missing, that route performs REAL PROVISIONING AGAINST
+    APPLE -- deploy/anisette-stack.yml:62-73 refuses to point even a healthcheck at it for
+    exactly this reason: "a polling healthcheck on / would hammer Apple's endpoint at exactly
+    the moment your identity volume has gone missing, turning a restore-the-backup incident into
+    rate-limit / account-lock territory."
+
+    That was harmless while this ran only when a human opened the status page. It stopped being
+    harmless the moment the altserver-web healthcheck started running the checks every five
+    minutes. So on the timer we ask the STATIC route instead, which makes no Apple contact, and
+    say plainly that the field contract was not verified. The page, which is a human asking once,
+    still does the real fetch.
+    """
     url = url or os.environ.get("ALTSERVER_ANISETTE_SERVER", "")
 
     if not url:
@@ -117,6 +133,24 @@ def check_anisette(url=None):
                        "Configured as %r." % url,
                        "AltServer's HTTP client constructor rejects a scheme-less URL before "
                        "sending anything. Use e.g. http://127.0.0.1:6969")
+
+    if polling:
+        # /v3/client_info is static and contacts Apple for nothing.
+        probe = url.rstrip("/") + "/v3/client_info"
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(probe, headers={"User-Agent": "Xcode"}),
+                    timeout=10) as resp:
+                if resp.status == 200:
+                    return _result(
+                        "Anisette server", OK, "Reachable (field contract not checked on a timer)",
+                        "Probed %s, which makes no Apple contact. The full ten-field check runs "
+                        "when the status page is opened." % probe)
+                return _result("Anisette server", FAIL, "HTTP %s from %s" % (resp.status, probe),
+                               "Reachable but unhealthy.", "Check the anisette container's logs.")
+        except Exception as exc:
+            return _result("Anisette server", FAIL, "Cannot reach %s" % probe, str(exc),
+                           "Is the anisette container running? Check `docker ps`.")
 
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Xcode"})
@@ -546,7 +580,7 @@ def _result_history_broken(reason):
                    "%s is writable and that the volume is not full." % HISTORY_PATH)
 
 
-def run_all(anisette_url=None, server_only=False):
+def run_all(anisette_url=None, server_only=False, polling=False):
     """Run every check, in parallel apart from the one real dependency.
 
     server_only narrows the OVERALL VERDICT to what the server is responsible for. Every check
@@ -564,7 +598,7 @@ def run_all(anisette_url=None, server_only=False):
     A check that raises must not take the dashboard with it -- that is what the whole page exists
     to avoid -- so each result is collected defensively.
     """
-    anisette = check_anisette(anisette_url)
+    anisette = check_anisette(anisette_url, polling=polling)
 
     def _clock():
         return check_clock(anisette.get("anisette_time"))
@@ -603,7 +637,10 @@ if __name__ == "__main__":
     # rather than only "is it broken now". The healthcheck is the writer: it already runs every
     # five minutes, which is a better cadence than anything a page load would produce.
     _record = "--record" in sys.argv[1:]
-    _run = run_all(server_only=_server_only)
+    # Anything on a timer is polling. See check_anisette: the bare root provisions against Apple
+    # when the identity is missing, so it must not be fetched every five minutes.
+    _polling = _record or _server_only or "--polling" in sys.argv[1:]
+    _run = run_all(server_only=_server_only, polling=_polling)
 
     _rec_err = record(_run) if _record else None
     if _rec_err:
