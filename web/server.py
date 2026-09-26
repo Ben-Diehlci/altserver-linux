@@ -94,9 +94,26 @@ PAGE = """<!doctype html>
          background:var(--unknownbg); font-size:.85rem; }
   .fix b { font-weight:600; }
   .hrow { display:flex; align-items:center; gap:.6rem; margin-top:.5rem; }
+  #histbox { position:relative; }
+  .hbar { padding:5px 0; }
   .hname { flex:none; min-width:11rem; font-size:.85rem; color:var(--muted); }
   .hbar { display:flex; gap:1px; flex:1; min-width:0; }
-  .hcell { flex:1 1 0; min-width:2px; height:14px; border-radius:2px; background:var(--unknownbg); }
+  .hcell { flex:1 1 0; min-width:2px; height:14px; border-radius:2px; background:var(--unknownbg);
+           transition:transform .13s cubic-bezier(.2,.8,.3,1), opacity .13s ease;
+           transform-origin:50% 50%; will-change:transform; }
+  /* Dock-style magnify: the hovered run grows most, its neighbours less, so the one under the
+     cursor is unambiguous even when each bar is two pixels wide. */
+  .hbar:hover .hcell { opacity:.5; }
+  .hcell:hover { transform:scale(2.6,2.1); opacity:1; border-radius:3px; }
+  .hcell:hover + .hcell,
+  .hcell:has(+ .hcell:hover) { transform:scale(1.85,1.6); opacity:.95; }
+  .hcell:hover + .hcell + .hcell,
+  .hcell:has(+ .hcell + .hcell:hover) { transform:scale(1.35,1.3); opacity:.8; }
+  @media (prefers-reduced-motion: reduce) { .hcell { transition:none; } }
+  .histtip { position:absolute; z-index:5; pointer-events:none; padding:.3rem .5rem;
+             border-radius:6px; background:var(--fg); color:var(--card); font-size:.75rem;
+             white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,.25); transform:translate(-50%,-115%); }
+  .histtip b { font-weight:700; text-transform:uppercase; letter-spacing:.03em; }
   .hcell.ok{background:var(--ok)} .hcell.warn{background:var(--warn)}
   .hcell.fail{background:var(--fail)} .hcell.unknown{background:var(--unknown);opacity:.45}
   .hlast { flex:none; font-size:.78rem; color:var(--muted); min-width:9rem; text-align:right; }
@@ -141,6 +158,7 @@ PAGE = """<!doctype html>
       <span class="summary" id="histstate">loading...</span>
     </div>
     <div id="hist"></div>
+    <div class="histtip" id="histtip" hidden></div>
   </div>
 
   <div class="card" style="margin-top:1rem">
@@ -162,6 +180,33 @@ function ago(s) {
   if (s < 5400) { return Math.round(s/60) + 'm ago'; }
   if (s < 172800) { return Math.round(s/3600) + 'h ago'; }
   return Math.round(s/86400) + 'd ago';
+}
+
+function histTime(sec) {
+  const d = new Date(sec * 1000);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const t = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  return sameDay ? t : (d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' + t);
+}
+
+// Delegated, because the rows are re-rendered on every refresh.
+function wireHistTip() {
+  const box = document.getElementById('hist');
+  const tip = document.getElementById('histtip');
+  if (!box || !tip || box.dataset.wired) { return; }
+  box.dataset.wired = '1';
+  box.addEventListener('mouseover', function (ev) {
+    const c = ev.target.closest('.hcell');
+    if (!c) { return; }
+    tip.innerHTML = '<b>' + esc(c.dataset.s) + '</b> ' + esc(histTime(Number(c.dataset.t)));
+    tip.hidden = false;
+    const cr = c.getBoundingClientRect();
+    const br = document.getElementById('histbox').getBoundingClientRect();
+    tip.style.left = (cr.left - br.left + cr.width / 2) + 'px';
+    tip.style.top = (cr.top - br.top) + 'px';
+  });
+  box.addEventListener('mouseleave', function () { tip.hidden = true; });
 }
 
 async function loadHistory() {
@@ -193,8 +238,9 @@ async function loadHistory() {
       entries.forEach(e => { const s = (e.checks||{})[n]; if (s && s !== 'ok') { lastBad = e.t; } });
       const cells = entries.map(e => {
         const s = (e.checks||{})[n] || 'unknown';
-        return '<i class="hcell ' + s + '" title="' + new Date(e.t*1000).toLocaleString()
-             + ': ' + s + '"></i>';
+        // data-, not title=: the native tooltip takes a second to appear, cannot be styled, and
+        // on 2px-wide bars gives no clue which one it belongs to.
+        return '<i class="hcell ' + s + '" data-t="' + e.t + '" data-s="' + s + '"></i>';
       }).join('');
       const newest = entries[entries.length-1].t;
       const last = lastBad === null ? 'clean' : ('last not-ok ' + ago(newest - lastBad));
@@ -202,6 +248,7 @@ async function loadHistory() {
            + '<span class="hbar">' + cells + '</span>'
            + '<span class="hlast">' + last + '</span></div>';
     }).join('');
+    wireHistTip();
   } catch (e) {
     state.textContent = 'Could not read the history.';
   }
