@@ -1,3 +1,7 @@
+# Belt and braces. The rule below already writes atomically (tmp + mv), which is the stronger
+# protection, but a future rule added here would not inherit that by accident.
+.DELETE_ON_ERROR:
+
 ROOT_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 include $(ROOT_DIR)/../main.mak
 

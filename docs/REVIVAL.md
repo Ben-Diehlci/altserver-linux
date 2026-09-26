@@ -114,6 +114,7 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | *(this)* | **Repo is pure ASCII.** 264 non-keyboard characters replaced; `check_ascii_punctuation.py` guards it. Two silent traps documented below. |
 | *(this)* | **mDNS advertisement self-heals.** avahi restarted 09-22 and the advert never came back: three-day silent outage. The helper now browses for its own record and re-registers. Guarded by `check_mdns_watchdog.py` (8 cases, 8 mutants). |
 | *(this)* | **Failures are visible to machines.** `/api/status` was 200 and `status_checks.py` exited 0 no matter what they found, so every monitor saw green through the outage. Now 503 and Nagios exit codes, guarded end-to-end by `check_status_signals.py`. |
+| *(this)* | **Editing a rewriter rebuilds again.** Three of four rewriter rules were not prerequisites of their output and `clean` left the patched trees, so rewriter edits silently did nothing. Plus the clock check no longer reports OK for a comparison it never ran. |
 
 ### CONFIRMED 2026-09-14: the Apple GSA client-info block is real
 
@@ -1289,6 +1290,74 @@ host, where the parent reports it as the generic "the python3 helper exited imme
 **Still not covered:** the helper being *killed*. The parent stops looking after ~1 second, and
 `PR_SET_PDEATHSIG` fires when the forking THREAD exits, not the process (mode 4 above). The status
 page shows it; nothing self-heals it.
+
+### CONFIRMED 2026-09-25: a sweep for the same shape found three more, two now fixed
+
+After the mDNS incident, 38 agents swept the repo across four lenses for the pattern behind it:
+code that reports success while failing. 34 candidates, 28 refuted under adversarial review, 6
+confirmed. **Every finding from the C/C++ lens was refuted** - the native code is clean; the
+problems are in the Python, the build glue and the compose file.
+
+**FIXED: editing a source rewriter rebuilt nothing.** This project patches vendored code by
+rewriting it at compile time, so `makefiles/rewrite_*.py` IS the patch and editing one is the
+documented way to change vendored behaviour. Three of the four rules that run a rewriter listed
+only the vendored SOURCE as a prerequisite, never the rewriter. Measured before the fix:
+
+    touch makefiles/rewrite_altserver_source.py
+    make          ->  regenerates 0 files
+    make clean    ->  patched tree still present, 35 files
+    make          ->  regenerates 0 files
+
+The build reported complete success with the previous patch compiled in. `clean` did not help
+because it never removed `AltServer_patched`, `AltSign_patched` or `ldid_patched` - so
+`make clean && make` rebuilt every object from stale rewritten sources and was not a clean build
+at all. Only deleting `build/` outright worked, which is exactly why CI never saw this: CI always
+starts from an empty tree. Locally it can silently waste hours - edit a rewriter, rebuild,
+redeploy, observe the old behaviour, with nothing anywhere indicating why. After the fix:
+
+    build, then make    ->  regenerates 0     (quiet when nothing changed)
+    touch a rewriter    ->  regenerates 35
+
+Also added `.DELETE_ON_ERROR` to all three makefiles that run a rewriter. This is the same class
+one step along: the rewriters exit non-zero on a pattern mismatch BY DESIGN, and `>` has already
+created the output file by then, so make left a TRUNCATED source in place and treated it as
+finished. `rewrite_idevice_source.py` already avoided this with a tmp-and-mv, which is stronger
+still because it also survives an interruption; `tests/check_rewriter_deps.py` accepts either.
+
+**FIXED: the clock check reported OK for a comparison it never performed.** `check_clock` wrapped
+its real anisette-drift comparison in a bare `except Exception: pass` and then fell through to
+`timedatectl` - which measures LOCAL NTP, the very thing its own docstring says "proves nothing on
+its own", because Linux forwards the ANISETTE server's `X-Apple-I-Client-Time` to Apple verbatim.
+
+The trigger is not hypothetical, and this is the part worth keeping: **AltServer's own C parses
+that field with `strptime()`, a PREFIX match, while the check used a full match on a fixed 19-char
+slice.** A non-zero-padded month is accepted by one and rejected by the other:
+
+    "2026-9-25T12:34:56Z"        C ACCEPTS (tail "Z")   Python RAISES
+    "2026-09-25 12:34:56Z"       C rejects              Python RAISES
+    "1758800000"                 C rejects              Python RAISES
+
+So a legal timestamp from an independent anisette implementation would leave refresh working
+normally while the clock check became a permanent silent no-op - and clock skew is the failure
+that surfaces as an opaque Apple `-36607` with nothing naming time as the cause. A parse failure
+now returns an explicit WARN naming the value, and the `timedatectl` fallback no longer reports
+OK: it says "Local NTP synchronised, anisette drift NOT checked", because a verification that
+cannot fail is worse than none. Fixing the swallow also repaired a message that actively lied -
+the fallback used to say "No anisette timestamp to compare against" when one was present, and
+"resolves itself once the anisette check above succeeds" when that check was already succeeding.
+
+**STILL OPEN, from the same sweep:**
+
+1. **No healthcheck on any service** (`deploy/altserver-stack.yml`), so nothing consumes the
+   status signals. Docker will not restart an unhealthy container anyway, but Portainer renders a
+   health badge, which is passive visibility in a UI the operator already uses. Deferred pending
+   a decision on whether an external uptime monitor exists.
+2. **`fetch_altstore` fails open on a catalogue error and returns 0**, making the entrypoint's own
+   "could not refresh the AltStore IPA" warning unreachable.
+3. **The redaction filter is a child nobody waits on** (`docker/docker-entrypoint.sh`). If it
+   dies, all logging silently ends and an empty `docker logs` reads as a quiet, healthy server.
+   `docker/redact-log.py` separately disables its tee on the first write error and never retries,
+   so the web log panel freezes on stale lines that look like an idle server.
 
 ## Repository audit, 2026-09-15
 

@@ -194,8 +194,27 @@ def check_clock(anisette_time=None):
                            "Apple sees the anisette server's timestamp verbatim. Skew surfaces as "
                            "an opaque -36607 with nothing naming time as the cause. Fix NTP on "
                            "whichever host runs anisette -- not just this one.")
-        except Exception:
-            pass
+        except Exception as exc:
+            # Do NOT fall through to the timedatectl fallback below. This used to be a bare
+            # `except: pass`, which meant an unparseable anisette timestamp silently skipped the
+            # only comparison that matters and then reported whatever LOCAL NTP said -- a green
+            # "NTP synchronised" for a check that never ran, measuring the very thing this
+            # docstring says proves nothing.
+            #
+            # The trigger is realistic, not hypothetical. AltServer's own C parses this field with
+            # strptime(), which is a PREFIX match, while this is a full match on a fixed 19-char
+            # slice. A non-zero-padded month ("2026-9-25T...") is accepted by AltServer and raises
+            # here, so refresh would keep working normally while the clock check became a
+            # permanent no-op -- and clock skew is the failure that surfaces as an opaque Apple
+            # -36607 with nothing naming time as the cause.
+            return _result("Clock agreement", WARN,
+                           "Could not read the anisette server's clock",
+                           "Anisette said %r (%s: %s)"
+                           % (anisette_time, type(exc).__name__, exc),
+                           "The drift comparison did not run, so clock skew would go unreported. "
+                           "Local NTP is not a substitute: Linux forwards the ANISETTE server's "
+                           "timestamp to Apple verbatim, so this host's clock proves nothing. "
+                           "Expected format is YYYY-MM-DDTHH:MM:SS.")
 
     rc, out = _run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
     if rc is None:
@@ -203,7 +222,14 @@ def check_clock(anisette_time=None):
                        "timedatectl is unavailable here, which is normal in a container.",
                        "This resolves itself once the anisette check above succeeds.")
     if out.strip() == "yes":
-        return _result("Clock agreement", OK, "NTP synchronised")
+        # WARN, not OK. This measured LOCAL NTP, which the docstring above explains is not the
+        # thing that breaks sign-in. Reporting OK here would be a verification that cannot fail,
+        # which this project has already been bitten by twice.
+        return _result("Clock agreement", WARN, "Local NTP synchronised, anisette drift NOT checked",
+                       "There was no anisette timestamp to compare against, so only this host's "
+                       "clock was verified.",
+                       "Apple sees the anisette server's timestamp, not this one. Fix the "
+                       "anisette check above to get a real answer.")
     return _result("Clock agreement", WARN, "Clock is NOT NTP-synchronised")
 
 

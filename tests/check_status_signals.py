@@ -139,6 +139,43 @@ check(proc.stdout.strip().startswith("{"),
       "it still prints the JSON, so the exit code did not replace the output")
 
 
+# ---- a check must not report success for work it did not do --------------------------------
+# check_clock used to wrap its real comparison in a bare `except Exception: pass` and then fall
+# through to `timedatectl`. An unparseable anisette timestamp therefore skipped the only
+# comparison that matters and reported whatever LOCAL NTP said -- and its own docstring explains
+# that local NTP proves nothing, because Linux forwards the ANISETTE server's timestamp to Apple
+# verbatim.
+#
+# The trigger is not hypothetical: AltServer's C parses this field with strptime(), a PREFIX
+# match, while this check uses a full match on a fixed 19-character slice. A non-zero-padded
+# month is accepted by AltServer and raises here, so refresh keeps working while the check
+# becomes a permanent no-op. Clock skew is the failure that surfaces as an opaque Apple -36607
+# with nothing naming time as the cause.
+import time as _time  # noqa: E402
+now = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.gmtime())
+
+good = status_checks.check_clock(now)
+check(good["state"] == status_checks.OK,
+      "a current anisette timestamp still reports OK (got %r)" % good["state"])
+
+for bad, why in [("2026-9-25T12:34:56Z", "non-zero-padded month, which AltServer's own C accepts"),
+                 ("2026-09-25 12:34:56Z", "space instead of T"),
+                 ("1758800000", "epoch integer"),
+                 ("not a timestamp at all", "garbage")]:
+    r = status_checks.check_clock(bad)
+    check(r["state"] != status_checks.OK,
+          "an unparseable timestamp (%s) never reports OK (got %r)" % (why, r["state"]))
+    check(r["state"] == status_checks.WARN,
+          "an unparseable timestamp (%s) reports WARN (got %r)" % (why, r["state"]))
+    check(bad in r.get("detail", ""),
+          "the failing value is shown, so it can be diagnosed (%s)" % why)
+
+# And a real skew must still FAIL rather than be softened by any of the above.
+skewed = status_checks.check_clock("2020-01-01T00:00:00")
+check(skewed["state"] == status_checks.FAIL,
+      "a genuinely skewed clock still reports FAIL (got %r)" % skewed["state"])
+
+
 if failures:
     print("\n%d check(s) failed:" % len(failures), file=sys.stderr)
     for f in failures:

@@ -110,6 +110,13 @@ jobs:
       - name: Failures are visible over HTTP and as an exit code
         run: python3 tests/check_status_signals.py
 
+      # Editing a source rewriter regenerated NOTHING: three of the four rules listed only the
+      # vendored source as a prerequisite, and `clean` never removed the patched trees. The build
+      # then succeeded with the previous patch compiled in. CI never saw it because CI always
+      # starts from an empty tree; locally it silently wastes hours.
+      - name: Editing a rewriter actually rebuilds what it generates
+        run: python3 tests/check_rewriter_deps.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"

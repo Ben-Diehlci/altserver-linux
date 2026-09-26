@@ -1,3 +1,9 @@
+# A rewriter that fails mid-write leaves a TRUNCATED file that make then treats as finished,
+# because make does not delete the target of a failed recipe by default. The rewriters exit
+# non-zero on a pattern mismatch by design, which is exactly when this bites. `>` has already
+# created the file at that point. This makes make clean it up instead.
+.DELETE_ON_ERROR:
+
 PROGRAM := AltServer
 
 ARCH := $(shell gcc -dumpmachine | cut -d- -f 1)
@@ -93,7 +99,13 @@ main_patched_root := $(BUILD_DIR)/AltServer_patched
 main_orifiles := $(wildcard $(main_srcroot)/*.*)
 main_newfiles := $(main_orifiles:$(main_srcroot)/%=$(main_patched_root)/%)
 
-$(main_patched_root)/%: $(main_srcroot)/%
+# The rewriter is a PREREQUISITE, not just something the recipe happens to run. Without it,
+# editing a rewriter regenerated NOTHING: make compared only the vendored source against the
+# patched output, found it newer, and reported a completely successful build with the previous
+# patch compiled in. `make clean` did not help either, because it never removed the patched tree.
+# Since this project's entire patching strategy is "patches to vendored code live in the
+# rewriters", the documented way to change vendored behaviour silently did nothing.
+$(main_patched_root)/%: $(main_srcroot)/% $(ROOT_DIR)/makefiles/rewrite_altserver_source.py
 	mkdir -p `dirname "$@"`
 	python3 $(ROOT_DIR)/makefiles/rewrite_altserver_source.py "$<" > $@
 
@@ -136,6 +148,9 @@ $(BUILD_DIR)/$(PROGRAM):: $(main_objs) $(BUILD_DIR)/libimobiledevice.a $(BUILD_D
 .PHONY: clean all
 clean:: lib_libimobiledevice_clean lib_AltSign_clean lib_dnssd_loader_clean
 	rm -f $(main_objs) $(BUILD_DIR)/$(PROGRAM)
+	# The PATCHED tree, not just the objects. Leaving it behind meant `make clean && make`
+	# rebuilt every object from the stale rewritten sources, so a clean build was not clean.
+	rm -rf $(main_patched_root)
 
 all:: preprocess $(BUILD_DIR)/$(PROGRAM)
 .DEFAULT_GOAL := all

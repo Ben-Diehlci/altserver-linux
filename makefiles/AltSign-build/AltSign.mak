@@ -1,3 +1,9 @@
+# A rewriter that fails mid-write leaves a TRUNCATED file that make then treats as finished,
+# because make does not delete the target of a failed recipe by default. The rewriters exit
+# non-zero on a pattern mismatch by design, which is exactly when this bites. `>` has already
+# created the file at that point. This makes make clean it up instead.
+.DELETE_ON_ERROR:
+
 CC := clang
 CXX := clang++
 
@@ -20,7 +26,9 @@ CXXFLAGS = $(CFLAGS) -std=c++17
 altsign_orifiles := $(wildcard $(ALTSIGN_ROOT)/*.*)
 altsign_newfiles := $(altsign_orifiles:$(ALTSIGN_ROOT)/%=$(ALTSIGN_NEWROOT)/%)
 
-$(ALTSIGN_NEWROOT)/%: $(ALTSIGN_ROOT)/%
+# See the note in the top-level Makefile: without the rewriter as a prerequisite, editing it
+# regenerates nothing and the build succeeds with the old patch.
+$(ALTSIGN_NEWROOT)/%: $(ALTSIGN_ROOT)/% $(ROOT_DIR)/rewrite_altsign_source.py
 	mkdir -p `dirname "$@"`
 	python3 $(ROOT_DIR)/rewrite_altsign_source.py "$<" > $@
 
@@ -31,7 +39,7 @@ altsign_src := $(filter %.cpp,$(altsign_newfiles))
 ldid_orifiles := $(LDID_ROOT)/ldid.cpp $(LDID_ROOT)/lookup2.c
 ldid_newfiles := $(ldid_orifiles:$(LDID_ROOT)/%=$(LDID_NEWROOT)/%)
 
-$(LDID_NEWROOT)/%: $(LDID_ROOT)/%
+$(LDID_NEWROOT)/%: $(LDID_ROOT)/% $(ROOT_DIR)/rewrite_ldid_source.py
 	mkdir -p `dirname "$@"`
 	python3 $(ROOT_DIR)/rewrite_ldid_source.py "$<" > $@
 
@@ -75,6 +83,7 @@ $(BUILD_DIR)/AltSign.a : $(objs)
 
 clean::
 	rm -rf $(ALTSIGN_NEWROOT)
+	rm -rf $(LDID_NEWROOT)
 	rm -f $(objs) AltSign.a
 
 all :: preprocess $(BUILD_DIR)/AltSign.a
