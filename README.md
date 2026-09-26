@@ -134,7 +134,16 @@ transport, and a web UI that drives the install.
 > if it happens repeatedly, the account lockouts issue [#88](https://github.com/NyaMisty/AltServer-Linux/issues/88) describes.
 
 **Portainer -> Stacks -> Add stack -> Repository**, pointing at this repo with compose path
-`deploy/altserver-stack.yml`. Or with plain compose:
+`deploy/altserver-stack.yml`. That path needs nothing on the host - Portainer fetches the repo
+itself.
+
+Everything else below runs files FROM this repo, so for those, get it onto the host first:
+
+```bash
+git clone --recursive https://github.com/Ben-Diehlci/altserver-linux.git && cd altserver-linux
+```
+
+Or with plain compose:
 
 ```bash
 docker compose -f deploy/altserver-stack.yml up -d
@@ -183,7 +192,13 @@ Then open **`http://<your-host>:8099`**.
   Expect `ptrace` denials in `dmesg` afterwards. Those are the profile working: the web UI runs
   with `pid: host`, so its process check walks every process on the box and is correctly refused
   on the ones it has no business reading.
-- **`network_mode: host`** on netmuxd and the web UI. netmuxd has to see mDNS on UDP 5353.
+- **`network_mode: host`** on all three of `altserver`, `netmuxd` and the web UI. mDNS is
+  link-local multicast and does not cross a Docker bridge: netmuxd would never see the phone, and
+  the phone would never discover `_altserver._tcp`. A `ports:` mapping cannot substitute for
+  `altserver` either - it binds an **ephemeral port that differs on every start**, which is
+  exactly why Bonjour discovery is load-bearing rather than a convenience. Put `altserver` on a
+  bridge and it will start, log nothing wrong, pass every process check, and be invisible to your
+  phone.
 
 #### The anisette trap, if you deploy anisette separately
 
@@ -201,6 +216,12 @@ anisette on its own.
 ```bash
 curl -fsS http://127.0.0.1:6969 | jq 'keys'     # ten X-Apple-* keys, all strings
 ```
+
+**Run that once, and do not put it in a loop.** The bare root is the v1 DATA route: on a server
+whose machine identity is missing it performs real provisioning against Apple, which is fine as
+the one-off it is here (that is what you are verifying) and is how an Apple ID gets rate-limited
+if something polls it. Anything on a timer should ask `/v3/client_info` instead, which is static.
+The status page and the healthcheck already do.
 
 The status page at `/` checks this and more. **Survive a redeploy, not just a restart** - `docker
 restart` keeps the container's filesystem, so it proves nothing about persistence. Recreate the
@@ -222,8 +243,15 @@ no terminal. The web UI supervises the process and delivers the code to a read w
 
 Credentials go to AltServer through the **environment**, never a command line, and the install log
 shown in the browser is filtered before it is rendered - enforced by
-[`tests/check_redaction.py`](tests/check_redaction.py). `docker logs` is **not** filtered and does
-contain the full account record and bearer tokens.
+[`tests/check_redaction.py`](tests/check_redaction.py). **`docker logs` is filtered too** - the
+entrypoint routes AltServer's stdout and stderr through the same `_redact` function before
+anything reaches Docker's log driver, so no unredacted copy of the output exists anywhere in the
+deployment.
+
+There is one exception and it announces itself. If the filter cannot be executed at start, the
+entrypoint logs `entrypoint: WARNING -- log redaction unavailable; credentials will appear in
+docker logs` and then logs unfiltered *deliberately*, because a server you cannot debug is worse
+than a credential in a log you already had. Grep for that line before assuming a log is clean.
 
 #### Reading the output
 
@@ -294,7 +322,27 @@ redirections, so a pasted `<stack>` silently creates files instead of failing.
 Restoring that tarball is the **only** disaster-recovery path for the anisette identity; without it
 a loss means re-provisioning and a fresh 2FA prompt.
 
+**There is a third thing worth knowing about, which is not in either tarball.** The
+`altserver-data` volume (mounted at `/data`) holds `AltServerData`, where AltServer keeps the
+signing certificate and the `serverID` your phone remembers this server by. Losing it does not
+cost you a 2FA prompt or a cable, but the next start mints a new identity, so AltStore treats
+this as a different server and installed apps have to be re-signed. Back it up the same way:
+
+```bash
+docker run --rm -v STACK_altserver-data:/data -v ~:/backup \
+  alpine tar czf /backup/altserver-data.tgz /data
+```
+
 Both tarballs contain identifying material and are already in `.gitignore`.
+
+**Before sharing logs or a backup**, [`deploy/credential-hygiene.sh`](deploy/credential-hygiene.sh)
+audits the places this deployment stores Apple credentials and device identifiers - logs, stray
+files, temp directories, shell history - and can clear them. It is for your server, not for the
+repo; it changes nothing about how the stack runs.
+
+```bash
+sudo bash deploy/credential-hygiene.sh
+```
 
 ---
 
@@ -308,6 +356,15 @@ from here; the command lines above are for when you want to see what it is doing
 | `/` | Health: anisette contract, clock, pairing, mDNS publication, process |
 | `/pairing` | Guided pairing, distinguishing the "nothing shows up" cases |
 | `/install` | Apple ID sign-in with 2FA entry in the browser |
+
+Four JSON endpoints back those pages, and they are worth knowing if you script anything:
+
+| Endpoint | Returns |
+|---|---|
+| `/api/status` | every check, plus `overall` and `server_overall`. `?full=1` for the complete anisette check |
+| `/api/history` | recent runs for the timeline, with `age_seconds` and `stale` |
+| `/api/logs` | the tail of the redacted log, with `mtime`, `age_seconds` and `stale` |
+| `/api/pairing` | the pairing wizard's steps as data |
 
 The status page also carries a **live log view**. Start it, trigger a refresh from AltStore,
 and watch AltServer's own output - which is the only thing that can actually confirm a
@@ -362,8 +419,27 @@ of a dead deployment is an app that will not open, a week later.
   `altserver-web` check is what runs `status_checks.py` on a schedule (every 5 minutes) -- until
   it existed, nothing ran the checks except a browser loading the page.
 
+  **What each badge actually tests**, because "unhealthy" with no explanation is not much better
+  than no badge:
+
+  | Service | Its healthcheck asks | Red after |
+  |---|---|---|
+  | `altserver` | does `_altserver._tcp` resolve, browsed from outside? | ~6 min (2m x 3) |
+  | `altserver-web` | `status_checks.py --server-only`: anisette, clock, advertisement, process | ~15 min (5m x 3) |
+  | `netmuxd` | does its socket exist? | ~6 min (2m x 3) |
+  | `anisette` | does `/v3/client_info` answer? | ~15 min (5m x 3) |
+
+  The `altserver` window is deliberately longer than the watchdog's recovery (two misses at
+  `ALTSERVER_MDNS_RECHECK_SECONDS`, so ~2 min), or it would flag an outage that is already being
+  repaired. Note that `altserver-web` goes red on a WARN as well as a failure - "I cannot tell"
+  must not look like "fine" - so a full `/data` volume or a missing `avahi-utils` turns it red
+  without anything being wrong with the server itself. The card on the page names which check it
+  was.
+
   The page also keeps a **history**: each healthcheck run is recorded, and the status page draws
-  a per-check timeline with "last not-ok 2h ago" beside each row. That is there because the
+  a per-check timeline with "last not-ok 2h ago" beside each row. The timeline shows the most
+  recent 120 runs, about 10 hours; the file keeps ~17 days (`ALTSERVER_HISTORY_MAX`) and
+  `/api/history` serves all of it. That is there because the
   09-22 outage could be seen but not dated -- the honest answer to "how long has this been down"
   was "between three and nine days". Every check is recorded, including the device ones.
 
@@ -380,6 +456,20 @@ of a dead deployment is an app that will not open, a week later.
   alone that is indistinguishable from health, so anything needing that distinction must read
   `overall` from the body or use the exit code. And `status_checks.py` is not on your PATH; it
   lives inside the image, hence the `docker exec` form in the table above.
+
+  **Confirming the watchdog is actually running**, which matters because it can be loaded and
+  blind. One of these appears in `docker logs altserver` at start:
+
+  ```
+  mDNS watchdog: ON, re-checking _altserver._tcp every 60s
+  mDNS watchdog: WARNING -- avahi-browse did not run, so the advertisement CANNOT be verified
+  ```
+
+  The second means `avahi-utils` is missing or avahi cannot be reached: the watchdog is there and
+  can see nothing, so a dropped registration would go unnoticed exactly as before. When it acts
+  you also get `mDNS watchdog: ... is NOT published; re-registering`. It needs two consecutive
+  misses before doing so and never acts on an unreadable browse, so expect recovery to take about
+  two intervals rather than one.
 
   This is not theoretical. On 2026-09-22 the mDNS advertisement was dropped and the server was
   undiscoverable for at least three days -- possibly nine, since nothing recorded it working.
@@ -429,9 +519,12 @@ terminal, because the 2FA code is read from stdin.
 | `ALTSERVER_ANISETTE_SERVER` | **Required.** Full URL including scheme, e.g. `http://127.0.0.1:6969`. There is no default |
 | `ALTSERVER_UDID` / `ALTSERVER_APPLE_ID` / `ALTSERVER_APPLE_PASSWORD` | Alternatives to `-u` / `-a` / `-p`. Prefer these: a password passed as `-p` is visible in `ps` to every user on the host |
 | `ALTSERVER_NO_CLIENTINFO_SANITIZE` | Set to `1` to stop rewriting `com.apple.dt.Xcode` in `X-MMe-Client-Info`. Diagnostic only - leave unset |
-| `ALTSTORE_SKIP_FETCH` | Set to `1` to stop the container refreshing `AltStore.ipa` on start |
+| `ALTSTORE_SKIP_FETCH` | Set to `1` to stop the container refreshing `AltStore.ipa` on start. The fetcher also takes `--force` (re-download even if current) and `--beta` (the beta channel), and exits `75` rather than `0` when it keeps an existing IPA after a failed check, so the entrypoint's warning is reachable |
+| `ALTSERVER_LOG` | Where the web UI READS the redacted log from. Default `/data/altserver.log`. It does not control where the log is WRITTEN - that is the `--tee` path in the entrypoint, and the two must match |
+| `ALTSERVER_NETMUXD_SOCKET` | Which socket the status page probes for netmuxd. Default `/run/muxd/usbmuxd`. Changing netmuxd's socket means changing this, `USBMUXD_SOCKET_ADDRESS`, and netmuxd's own `--socket-path` - all three, or the checks and the daemon look at different places |
+| `ALTSTORE_IPA_PATH` | Where the AltStore IPA is fetched to. Default `/data/AltStore.ipa` |
 | `ALTSERVER_HISTORY` | Where the run-by-run check history is written. Default `/data/status-history.jsonl`. The `altserver-web` healthcheck records one line every 5 minutes; the status page draws a timeline from it |
-| `ALTSERVER_HISTORY_MAX` | How many runs to keep. Default `5000`, about 17 days at the healthcheck's cadence |
+| `ALTSERVER_HISTORY_MAX` | How many runs to RETAIN. Default `5000`, about 17 days at the healthcheck's cadence. The page draws only the most recent 120 of them, roughly 10 hours; `/api/history` returns the rest |
 | `ALTSERVER_MDNS_RECHECK_SECONDS` | How often the server re-checks that its own mDNS advertisement is still published, re-registering if not. Default `60`. Set to `0` to disable. Leave it on: without it, an avahi restart makes the server permanently undiscoverable with no other symptom |
 | `ALTSERVER_APPARMOR` | Which AppArmor profile the containers request. Default `unconfined`. Set to `altserver-mdns` only AFTER running `sudo bash deploy/apparmor/install.sh` on the host - a container asking for an unloaded profile fails to start |
 
@@ -448,6 +541,7 @@ Bundled in the container image. Needed on the host if you run the binary directl
 | `python3` | The binary is `-static` and cannot dlopen Bonjour, so it shells out to python3 | Advertisement fails |
 | `libavahi-compat-libdnssd-dev` | Provides the **unversioned** `libdns_sd.so` the code dlopens | Advertisement fails |
 | `avahi-daemon` running | Performs the actual mDNS publishing | Advertisement fails |
+| `avahi-utils` | Provides `avahi-browse`, the only way to check an advertisement from outside | **The self-heal watchdog silently turns itself OFF**, and the status checks report UNKNOWN |
 | `usbmuxd` for cabled pairing; **`netmuxd` for Wi-Fi** | Device access | No device found |
 | An anisette server | Apple machine identity | Sign-in fails |
 | Accurate clock **on the anisette host** | Its timestamp is forwarded to Apple verbatim | Opaque `-36607` |
@@ -616,7 +710,7 @@ overwrites hand edits on its next pull:
 
 | Variable | Where | Set it when |
 |---|---|---|
-| `BUILDER_NAMESPACE` = your GitHub account, lowercased | Settings -> Secrets and variables -> Actions | you have run **Build buildenv Docker** to publish your own toolchain. Until then the default set is public and works |
+| `BUILDER_NAMESPACE` = your GitHub account, lowercased | Settings -> Secrets and variables -> Actions | you have run **Build buildenv Docker** to publish your own toolchain. Until then the default set is public and works. **Only `build_image.yml` reads it** - the binary build in `build.yml` has its builder image pinned in the matrix, so setting this does not redirect that one |
 | `ALTSERVER_APPARMOR` = `altserver-mdns` | Portainer stack environment | you want the confined profile - see [Two settings that are load-bearing](#two-settings-that-are-load-bearing) in Setup, which applies whether you fork or not |
 
 `platforms: linux/amd64` in `build_image.yml` is hardcoded deliberately. Stage one pulls an
@@ -698,7 +792,12 @@ tag is worth avoiding rather than merely fixing.
     ghcr.io/ben-diehlci/altserver_builder_alpine_amd64 \
     bash -c 'mkdir -p build; cd build; make -f ../Makefile -j"$(nproc)"'
   ```
-  Or build the container image directly: `docker build -t altserver .`
+  Or build the container image directly - note the `-f`, because the Dockerfile is not at the
+  repo root and the build context must still be the root:
+
+  ```bash
+  docker build -f docker/Dockerfile -t altserver .
+  ```
 
 - By hand (note the `cd build` - the Makefile builds into the *current* directory):
   ```
@@ -754,6 +853,40 @@ fixes, all applied there:
 
 The old note about removing `-mno-default` for ARM is **stale** - the Makefile already guards that
 flag to i386/i686, so ARM builds work unmodified.
+
+---
+
+## The guard suite
+
+Eleven checks under [`tests/`](tests/) run on every push, wired into
+`.github/workflows/build.yml`. Each one exists because the bug it guards **shipped silently** -
+the build stayed green, the stack deployed, and the failure showed up days later as an app that
+would not open. They are the reason this repo can be changed with any confidence.
+
+```bash
+python3 -m pip install pyyaml          # only check_compose and check_observability need it
+for t in tests/check_*.py; do echo "== $t"; python3 "$t" || break; done
+```
+
+| Guard | The bug it exists because of |
+|---|---|
+| `check_workflow_paths` | A `paths:` filter omitted `web/**`, so five commits of fixes never reached a published image |
+| `check_page_js` | One literal newline in a JS string killed every page's entire `<script>` block |
+| `check_compose` | A duplicate YAML key silently kept the last value; the stack only broke at deploy time |
+| `check_conn_data_layout` | A usbmux address parsed in one sockaddr layout, so every Wi-Fi refresh failed as a device fault |
+| `check_redaction` | The install log printed the anisette identity in full, over plain HTTP |
+| `check_ascii_punctuation` | Typographic characters reached the served page as raw bytes, `\u` escapes and HTML entities |
+| `check_mdns_watchdog` | The advertisement was registered once and trusted forever; avahi restarted and it never came back |
+| `check_status_signals` | `/api/status` answered `200` and the script exited `0` through a three-day total outage |
+| `check_rewriter_deps` | Editing a source rewriter regenerated nothing, and the build reported success with the old patch |
+| `check_observability` | Nothing ran the checks, nothing consumed them, and a dead log read as a quiet server |
+| `check_readme_claims` | This file drifted into 38 defects, including a security claim contradicted 90 lines later, because nothing executed the documentation |
+
+Two conventions worth keeping if you add one. **Verify it by mutation** - reintroduce the bug and
+confirm the guard fails; several here were written, passed, and only caught anything after a
+mutant proved they could. And **exercise the thing rather than grep its source**: three separate
+times in this repo a guard that searched for a variable name passed while the behaviour it named
+was broken.
 
 ---
 

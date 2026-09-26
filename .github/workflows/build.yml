@@ -126,6 +126,12 @@ jobs:
           python3 -m pip install --quiet --disable-pip-version-check pyyaml
           python3 tests/check_observability.py
 
+      # An audit found 38 defects in README.md, including a security claim that `docker logs` was
+      # unfiltered and full of bearer tokens -- contradicted by another paragraph 90 lines down,
+      # and false for months. Documentation was the one part of this repo nothing executed.
+      - name: The README still describes the code that exists
+        run: python3 tests/check_readme_claims.py
+
   check:
     runs-on: ubuntu-latest
     name: "Check Upstream Updates"
