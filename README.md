@@ -344,6 +344,11 @@ of a dead deployment is an app that will not open, a week later.
   `altserver-web` check is what runs `status_checks.py` on a schedule (every 5 minutes) -- until
   it existed, nothing ran the checks except a browser loading the page.
 
+  The page also keeps a **history**: each healthcheck run is recorded, and the status page draws
+  a per-check timeline with "last not-ok 2h ago" beside each row. That is there because the
+  09-22 outage could be seen but not dated -- the honest answer to "how long has this been down"
+  was "between three and nine days". Every check is recorded, including the device ones.
+
   The health badge uses `--server-only`, which judges the server rather than whether your phone
   happens to be at home: anisette, clock agreement, the mDNS advertisement and the daemon
   process. Otherwise the container would go unhealthy every time you left the house. The page
@@ -406,6 +411,8 @@ terminal, because the 2FA code is read from stdin.
 | `ALTSERVER_UDID` / `ALTSERVER_APPLE_ID` / `ALTSERVER_APPLE_PASSWORD` | Alternatives to `-u` / `-a` / `-p`. Prefer these: a password passed as `-p` is visible in `ps` to every user on the host |
 | `ALTSERVER_NO_CLIENTINFO_SANITIZE` | Set to `1` to stop rewriting `com.apple.dt.Xcode` in `X-MMe-Client-Info`. Diagnostic only - leave unset |
 | `ALTSTORE_SKIP_FETCH` | Set to `1` to stop the container refreshing `AltStore.ipa` on start |
+| `ALTSERVER_HISTORY` | Where the run-by-run check history is written. Default `/data/status-history.jsonl`. The `altserver-web` healthcheck records one line every 5 minutes; the status page draws a timeline from it |
+| `ALTSERVER_HISTORY_MAX` | How many runs to keep. Default `5000`, about 17 days at the healthcheck's cadence |
 | `ALTSERVER_MDNS_RECHECK_SECONDS` | How often the server re-checks that its own mDNS advertisement is still published, re-registering if not. Default `60`. Set to `0` to disable. Leave it on: without it, an avahi restart makes the server permanently undiscoverable with no other symptom |
 | `ALTSERVER_APPARMOR` | Which AppArmor profile the containers request. Default `unconfined`. Set to `altserver-mdns` only AFTER running `sudo bash deploy/apparmor/install.sh` on the host - a container asking for an unloaded profile fails to start |
 

@@ -95,23 +95,78 @@ check("--server-only" in web.get("test", []),
       "it judges the SERVER, not whether the phone is home -- otherwise the container goes "
       "unhealthy every time its owner leaves the house, and the badge gets ignored")
 
-# And --server-only must actually DROP the device checks, not just be accepted as a flag.
+check("--record" in web.get("test", []),
+      "it records each run, so the page can answer WHEN something started")
+
+# --server-only must narrow the VERDICT without stopping the checks running. An earlier version
+# of this skipped them entirely, which was wrong once history existed: the device checks would
+# never be recorded and "when did the phone drop off the network" would be unanswerable for
+# exactly the reason the mDNS outage was.
 sys.path.insert(0, os.path.join(ROOT, "web"))
 import status_checks as _sc  # noqa: E402
-_names = set()
+
+_failing_device = {"name": "iPhone reachability", "state": _sc.FAIL,
+                   "summary": "", "detail": "", "fix": ""}
+_ok = {"name": "Anisette server", "state": _sc.OK, "summary": "", "detail": "", "fix": ""}
+check(_sc.verdict([_ok, _failing_device], server_only=True) == _sc.OK,
+      "a phone that is away does NOT make the server unhealthy (--server-only verdict)")
+check(_sc.verdict([_ok, _failing_device], server_only=False) == _sc.FAIL,
+      "but the page still calls it a failure")
+_failing_server = {"name": "mDNS advertisement", "state": _sc.FAIL,
+                   "summary": "", "detail": "", "fix": ""}
+check(_sc.verdict([_ok, _failing_server], server_only=True) == _sc.FAIL,
+      "a real server failure is NOT masked by --server-only")
+
+_ran = set()
 _real_device = _sc.check_device
-_sc.check_device = lambda: (_names.add("device-ran") or
-                            {"name": "iPhone reachability", "state": _sc.FAIL,
-                             "summary": "", "detail": "", "fix": ""})
+_sc.check_device = lambda: (_ran.add("device") or dict(_failing_device))
 try:
     _out = _sc.run_all(anisette_url="http://127.0.0.1:1", server_only=True)
 finally:
     _sc.check_device = _real_device
-_reported = [c["name"] for c in _out["checks"]]
-check("device-ran" not in _names,
-      "--server-only does not even RUN the device checks")
-check(not any(n in _sc.DEVICE_DEPENDENT for n in _reported),
-      "and none of %s appears in the result (%s)" % (list(_sc.DEVICE_DEPENDENT), _reported))
+check("device" in _ran,
+      "--server-only still RUNS the device checks, so they reach the history")
+check(any(c["name"] in _sc.DEVICE_DEPENDENT for c in _out["checks"]),
+      "and they still appear in the result for the page to show")
+
+
+# ---- the history must record, bound itself, and never fail silently ------------------------
+import tempfile as _tf  # noqa: E402
+
+_hp = os.path.join(_tf.mkdtemp(), "h.jsonl")
+_run = {"overall": "ok", "checks": [{"name": "mDNS advertisement", "state": "ok"}], "host": "t"}
+check(_sc.record(_run, _hp) is None, "record() returns None on success")
+check(len(_sc.read_history(_hp)) == 1, "and the run is readable back")
+
+# A history that cannot be written must SAY SO rather than vanish -- that is the entire failure
+# mode this session has been about.
+_why = _sc.record(_run, "/nonexistent/dir/h.jsonl")
+check(isinstance(_why, str) and _why,
+      "record() RETURNS the reason when it cannot write (got %r)" % _why)
+
+# A torn final line must not discard the whole timeline.
+with open(_hp, "a", encoding="utf-8") as _fh:
+    _fh.write('{"t": 1, "overall": "ok", "chec')
+check(len(_sc.read_history(_hp)) == 1,
+      "a torn line is skipped rather than taking the timeline with it")
+
+# Bounded, or it grows without limit on a volume shared with the daemon.
+_old_max = _sc.HISTORY_MAX
+try:
+    _sc.HISTORY_MAX = 25
+    for _ in range(200):
+        _sc.record(_run, _hp)
+    _n = len(_sc.read_history(_hp))
+finally:
+    _sc.HISTORY_MAX = _old_max
+check(_n <= 25 + 1, "the history is trimmed to its bound (kept %d with max 25)" % _n)
+check(not os.path.exists(_hp + ".tmp"), "trimming leaves no .tmp behind")
+
+_server_src = open(os.path.join(ROOT, "web", "server.py"), encoding="utf-8").read()
+check("/api/history" in _server_src, "there is an /api/history endpoint to read it")
+for _f in ("age_seconds", "stale"):
+    check(_server_src.count('"%s"' % _f) >= 2,
+          "/api/history reports %s -- a recorder that stopped must not read as 'all quiet'" % _f)
 
 # Polling anisette's "/" performs REAL provisioning against Apple. A healthcheck must never.
 ani = " ".join(services["anisette"].get("healthcheck", {}).get("test", []))

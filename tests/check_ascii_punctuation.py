@@ -25,7 +25,9 @@ scripts anyway.
 """
 
 import ast
+import html
 import os
+import re
 import subprocess
 import sys
 import unicodedata
@@ -142,6 +144,43 @@ def main():
                     "      The file is ASCII on disk, but this reaches the user as a non-ASCII\n"
                     "      character. Check for a \\uXXXX escape."
                     % (rel, node.lineno, ord(ch), name,
+                       (" -- write %r instead" % fix) if fix else ""))
+
+    # THIRD PASS: HTML entities, which are the same trick again in a third costume. An em-dash
+    # entity is seven ASCII characters in the file AND in the response body, and an em dash by
+    # the time a browser has finished with it. (Not spelled out here, because this guard would
+    # correctly flag its own comment for doing so.)
+    # The byte scan misses it, and so does the string-VALUE scan, because the string really is
+    # ASCII -- it is the renderer that transforms it. Found only by reading the served page.
+    #
+    # Escaping entities are exempt: &amp; &lt; &gt; &quot; &apos; exist to make text safe, not to
+    # decorate it, and replacing them would be a bug.
+    ESCAPING = {"amp", "lt", "gt", "quot", "apos", "#39", "#34"}
+    for rel in tracked_files():
+        if rel in ALLOW or not rel.endswith((".py", ".html", ".md")):
+            continue
+        path = os.path.join(ROOT, rel)
+        if not os.path.exists(path):
+            continue
+        for lineno, line in enumerate(open(path, encoding="utf-8").read().split("\n"), 1):
+            for m in re.finditer(r"&(#?x?[0-9a-zA-Z]+);", line):
+                name = m.group(1)
+                if name in ESCAPING:
+                    continue
+                try:
+                    rendered = html.unescape("&%s;" % name)
+                except Exception:
+                    continue
+                if not rendered or rendered == "&%s;" % name:
+                    continue      # not a real entity, just text that looks like one
+                if all(ord(c) < 128 for c in rendered):
+                    continue
+                fix = SUGGESTIONS.get(rendered) if len(rendered) == 1 else None
+                problems.append(
+                    "%s:%d: the HTML entity &%s; RENDERS as U+%04X%s\n"
+                    "      The file and the response body are both ASCII; the browser is what\n"
+                    "      turns it into a non-ASCII character."
+                    % (rel, lineno, name, ord(rendered[0]),
                        (" -- write %r instead" % fix) if fix else ""))
 
     if problems:

@@ -93,6 +93,13 @@ PAGE = """<!doctype html>
   .fix { margin-top:.5rem; padding:.5rem .65rem; border-radius:7px;
          background:var(--unknownbg); font-size:.85rem; }
   .fix b { font-weight:600; }
+  .hrow { display:flex; align-items:center; gap:.6rem; margin-top:.5rem; }
+  .hname { flex:none; min-width:11rem; font-size:.85rem; color:var(--muted); }
+  .hbar { display:flex; gap:1px; flex:1; min-width:0; }
+  .hcell { flex:1 1 0; min-width:2px; height:14px; border-radius:2px; background:var(--unknownbg); }
+  .hcell.ok{background:var(--ok)} .hcell.warn{background:var(--warn)}
+  .hcell.fail{background:var(--fail)} .hcell.unknown{background:var(--unknown);opacity:.45}
+  .hlast { flex:none; font-size:.78rem; color:var(--muted); min-width:9rem; text-align:right; }
   .ok .pill{background:var(--okbg);color:var(--ok)} .warn .pill{background:var(--warnbg);color:var(--warn)}
   .fail .pill{background:var(--failbg);color:var(--fail)} .unknown .pill{background:var(--unknownbg);color:var(--unknown)}
   .overall.ok{background:var(--okbg);color:var(--ok)} .overall.warn{background:var(--warnbg);color:var(--warn)}
@@ -123,10 +130,18 @@ PAGE = """<!doctype html>
     <h1>AltServer status</h1>
     <div class="meta">
       <span id="overall" class="overall">checking...</span>
-      &nbsp;<span id="host"></span> &middot; <span id="when"></span>
+       <span id="host"></span> - <span id="when"></span>
     </div>
   </header>
   <div id="checks"></div>
+
+  <div class="card" id="histbox">
+    <div class="row">
+      <span class="name">History</span>
+      <span class="summary" id="histstate">loading...</span>
+    </div>
+    <div id="hist"></div>
+  </div>
 
   <div class="card" style="margin-top:1rem">
     <div class="row">
@@ -137,11 +152,61 @@ PAGE = """<!doctype html>
   </div>
 
   <footer>
-    Refreshes every 30s. Read-only &mdash; this page does not sign in or change anything.
+    Refreshes every 30s. Read-only - this page does not sign in or change anything.
     Raw JSON at <code>/api/status</code>.
   </footer>
 </div>
 <script>
+function ago(s) {
+  if (s < 90) { return s + 's ago'; }
+  if (s < 5400) { return Math.round(s/60) + 'm ago'; }
+  if (s < 172800) { return Math.round(s/3600) + 'h ago'; }
+  return Math.round(s/86400) + 'd ago';
+}
+
+async function loadHistory() {
+  const box = document.getElementById('hist');
+  const state = document.getElementById('histstate');
+  try {
+    const r = await fetch('/api/history', {cache:'no-store'});
+    const d = await r.json();
+    if (!d.available || !d.entries.length) {
+      state.textContent = d.why || 'No history recorded yet.';
+      box.innerHTML = '';
+      return;
+    }
+    const entries = d.entries.slice(-120);
+    const names = [];
+    entries.forEach(e => Object.keys(e.checks || {}).forEach(n => {
+      if (names.indexOf(n) < 0) { names.push(n); }
+    }));
+    const span = entries[entries.length-1].t - entries[0].t;
+    // A recorder that stopped must not read as "all quiet" - that is the whole failure this
+    // view exists to make visible.
+    state.textContent = d.stale
+      ? ('STALE - nothing recorded for ' + ago(d.age_seconds) + '. The altserver-web healthcheck '
+         + 'is the writer; check that it is passing --record.')
+      : (entries.length + ' runs over ' + ago(span).replace(' ago','') + ', newest '
+         + ago(d.age_seconds));
+    box.innerHTML = names.map(n => {
+      let lastBad = null;
+      entries.forEach(e => { const s = (e.checks||{})[n]; if (s && s !== 'ok') { lastBad = e.t; } });
+      const cells = entries.map(e => {
+        const s = (e.checks||{})[n] || 'unknown';
+        return '<i class="hcell ' + s + '" title="' + new Date(e.t*1000).toLocaleString()
+             + ': ' + s + '"></i>';
+      }).join('');
+      const newest = entries[entries.length-1].t;
+      const last = lastBad === null ? 'clean' : ('last not-ok ' + ago(newest - lastBad));
+      return '<div class="hrow"><span class="hname">' + esc(n) + '</span>'
+           + '<span class="hbar">' + cells + '</span>'
+           + '<span class="hlast">' + last + '</span></div>';
+    }).join('');
+  } catch (e) {
+    state.textContent = 'Could not read the history.';
+  }
+}
+
 async function load() {
   try {
     const r = await fetch('/api/status', {cache:'no-store'});
@@ -150,6 +215,7 @@ async function load() {
     o.textContent = d.overall; o.className = 'overall ' + d.overall;
     document.getElementById('host').textContent = d.host || '';
     document.getElementById('when').textContent = new Date().toLocaleTimeString();
+    loadHistory();
     document.getElementById('checks').innerHTML = d.checks.map(c => `
       <div class="card ${c.state}">
         <div class="row">
@@ -474,6 +540,30 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 data = {"lines": [], "available": False, "path": path_log,
                         "why": "Could not read %s: %s" % (path_log, exc)}
+            self._send(200, json.dumps(data), "application/json")
+        elif path == "/api/history":
+            # The question the 2026-09-22 outage could not answer. Every check result used to be
+            # computed fresh and discarded, so the page could say "broken now" and never "broken
+            # since Tuesday" -- the advertisement had been dead for somewhere between three and
+            # nine days and nothing recorded which.
+            try:
+                entries = status_checks.read_history(limit=2000)
+                data = {"entries": entries, "available": True,
+                        "path": status_checks.HISTORY_PATH}
+                if entries:
+                    newest = max(e.get("t", 0) for e in entries)
+                    data["age_seconds"] = max(0, int(time.time() - newest))
+                    # The recorder is the healthcheck, every 5 minutes. Nothing for half an hour
+                    # means the recorder itself stopped, which must not read as "all quiet".
+                    data["stale"] = data["age_seconds"] > 1800
+                else:
+                    data["why"] = ("No history yet at %s. The altserver-web healthcheck writes "
+                                   "it every 5 minutes; give it one interval, and check that "
+                                   "the healthcheck passes --record."
+                                   % status_checks.HISTORY_PATH)
+            except Exception as exc:
+                data = {"entries": [], "available": False, "why": str(exc),
+                        "path": status_checks.HISTORY_PATH}
             self._send(200, json.dumps(data), "application/json")
         elif path == "/api/status":
             try:

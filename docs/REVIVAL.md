@@ -115,6 +115,7 @@ excluding `AltServerMain.cpp.o` (it owns `main`) and stubbing `make_uuid()`,
 | *(this)* | **mDNS advertisement self-heals.** avahi restarted 09-22 and the advert never came back: three-day silent outage. The helper now browses for its own record and re-registers. Guarded by `check_mdns_watchdog.py` (8 cases, 8 mutants). |
 | *(this)* | **Failures are visible to machines.** `/api/status` was 200 and `status_checks.py` exited 0 no matter what they found, so every monitor saw green through the outage. Now 503 and Nagios exit codes, guarded end-to-end by `check_status_signals.py`. |
 | *(this)* | **Editing a rewriter rebuilds again.** Three of four rewriter rules were not prerequisites of their output and `clean` left the patched trees, so rewriter edits silently did nothing. Plus the clock check no longer reports OK for a comparison it never ran. |
+| *(this)* | **Status history.** Each run is recorded, so the page shows a per-check timeline and "last not-ok 2h ago" instead of only a snapshot. Answers the question the 09-22 outage could not. |
 
 ### CONFIRMED 2026-09-14: the Apple GSA client-info block is real
 
@@ -1408,6 +1409,46 @@ two arrows, a check mark and a middle dot -- in link text, a placeholder and a s
 files were ASCII; the PAGE served to every visitor was not, and the guard reported clean
 throughout. It now makes a second pass with `ast`, checking what every string literal EVALUATES
 to, with the guard's own mapping table the single documented exemption.
+
+### CONFIRMED 2026-09-26: the dashboard now answers "when", not just "whether"
+
+Every check result used to be computed fresh and discarded, so the status page could say "broken
+now" and never "broken since Tuesday". During the 09-22 outage the honest answer to "how long has
+this been down" was "somewhere between three and nine days" -- reconstructed from `journalctl` and
+a container start time, because nothing in this project recorded anything.
+
+`status_checks.py --record` appends one line per run to `/data/status-history.jsonl`
+(`ALTSERVER_HISTORY`, bounded by `ALTSERVER_HISTORY_MAX`, default 5000 runs ~ 17 days at the
+healthcheck's five-minute cadence). The altserver-web healthcheck is the writer: it already runs
+on a fixed schedule, which is a better timeline than page loads would give. `/api/history` serves
+it and the status page draws a per-check timeline with "last not-ok 2h ago" beside each row.
+
+**A design decision from earlier the same day had to be reversed.** `--server-only` originally
+SKIPPED the device checks. That was right for the healthcheck verdict -- a phone that has left the
+house must not mark the container unhealthy -- and wrong once history existed, because those
+checks would then never be recorded and "when did the phone drop off the network" would be
+unanswerable for exactly the reason the mDNS outage was. `--server-only` now narrows the VERDICT
+only; every check still runs and is still recorded. The guard was rewritten to assert the
+intent (a failing device check does not make the server unhealthy, a failing server check still
+does) rather than the implementation detail it previously pinned.
+
+**Two bugs in this feature were found by the guard, not by review, and both are the house
+pattern.** `record()`'s trim was gated on `os.path.getsize(path) > HISTORY_MAX * 400`, a cheap
+way to avoid reading the file every run -- but that guess does not bind: with the short lines a
+four-check run produces, the file held 93 entries against a bound of 25, roughly double the
+intended window, and how long the window actually was depended on how long the check names
+happened to be. And `_result` as a variable name in `__main__` shadowed the module-level
+`_result()` function, so the "could not record history" path raised `TypeError: 'dict' object is
+not callable` -- the error handler was broken, and only running the failure path showed it.
+
+**A THIRD form of the non-ASCII hole, found by reading the served page rather than the source.**
+`tests/check_ascii_punctuation.py` already scanned file bytes, and then string literal VALUES
+after `\uXXXX` escapes are decoded. It still missed HTML entities: an em-dash entity is seven
+ASCII characters in the file AND in the response body, and an em dash only once a browser has
+rendered it. Three were live on the status page. The guard now makes a third pass over entities,
+exempting the escaping ones (`&amp;` and friends exist to make text safe, not to decorate it).
+The served page is now ASCII at every layer: raw bytes, decoded string values, and after full
+entity expansion.
 
 ## Repository audit, 2026-09-15
 

@@ -349,7 +349,14 @@ services:
       # dashboard and wrong here: without this the container would go unhealthy every time you
       # walked out of the house, and a badge that is red half the time gets ignored. The page
       # itself always shows everything.
-      test: ["CMD", "python3", "/opt/altserver-web/status_checks.py", "-q", "--server-only"]
+      #
+      # --record appends each run to /data/status-history.jsonl, which is what lets the page
+      # answer "when did this start" instead of only "is it broken now". This healthcheck is the
+      # writer: it already runs on a fixed 5-minute cadence, which is a better timeline than
+      # anything page loads would produce. Every check is recorded, including the device ones;
+      # --server-only narrows the VERDICT, not what runs.
+      test: ["CMD", "python3", "/opt/altserver-web/status_checks.py",
+             "-q", "--server-only", "--record"]
       interval: 5m
       timeout: 120s
       retries: 3

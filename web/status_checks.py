@@ -399,14 +399,104 @@ def check_altserver_running():
 # days.
 DEVICE_DEPENDENT = ("iPhone reachability", "iPhone is advertising")
 
+# Where the run-by-run history lives. The web container and altserver share this volume.
+HISTORY_PATH = os.environ.get("ALTSERVER_HISTORY", "/data/status-history.jsonl")
+# ~17 days at the healthcheck's 5-minute cadence, about 750KB. Long enough to answer "when did
+# this start" across a 7-day certificate cycle, which is the question the 2026-09-22 outage could
+# not answer: the advertisement had been dead for somewhere between three and nine days and
+# nothing anywhere recorded which.
+HISTORY_MAX = int(os.environ.get("ALTSERVER_HISTORY_MAX", "5000"))
+
+
+def record(result, path=None):
+    """Append one run to the history. Returns None on success, or a reason string.
+
+    Deliberately returns the reason rather than raising: recording must never break the checks
+    or the healthcheck that calls it. But it must not vanish either -- a history that silently
+    stopped recording would look exactly like a server that has been fine all along, which is
+    the failure this whole file now exists to prevent. The caller reports what comes back.
+    """
+    path = path or HISTORY_PATH
+    line = json.dumps({
+        "t": int(time.time()),
+        "overall": result["overall"],
+        "checks": {c["name"]: c["state"] for c in result["checks"]},
+    }, sort_keys=True)
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception as exc:
+        return "%s: %s" % (type(exc).__name__, exc)
+
+    # Trim by LINE COUNT, so the timeline is a predictable span of TIME rather than of bytes.
+    #
+    # This used to skip the count unless the file exceeded HISTORY_MAX * 400 bytes, as a cheap
+    # way to avoid reading it every run. That guess does not bind: with the short lines a
+    # four-check run produces, the file held roughly double the intended window before the
+    # threshold was ever reached. A bound that depends on how long the check names happen to be
+    # is not a bound. The read costs nothing at a five-minute cadence on a file this size.
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+        if len(lines) > HISTORY_MAX:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.writelines(lines[-HISTORY_MAX:])
+            os.replace(tmp, path)   # atomic: a reader never sees a half-written file
+    except Exception as exc:
+        return "trim failed: %s: %s" % (type(exc).__name__, exc)
+    return None
+
+
+def read_history(path=None, limit=None):
+    """Recent runs, oldest first. Never raises; an unreadable history is an empty one."""
+    path = path or HISTORY_PATH
+    out = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    out.append(json.loads(raw))
+                except ValueError:
+                    continue      # a torn line must not discard the rest of the timeline
+    except OSError:
+        return []
+    return out[-limit:] if limit else out
+
+
+def verdict(checks, server_only=False):
+    """Roll per-check states into one overall verdict.
+
+    server_only EXCLUDES the device checks from the verdict -- it does not stop them running.
+    That distinction was got wrong first time round and is worth stating: the healthcheck needs
+    to ignore "the phone is out of the house" when deciding whether the SERVER is healthy, but
+    the history wants those checks recorded anyway, or "when did the phone drop off the network"
+    becomes unanswerable for exactly the same reason the mDNS outage was.
+    """
+    considered = [c for c in checks
+                  if not (server_only and c["name"] in DEVICE_DEPENDENT)]
+    states = [c["state"] for c in considered]
+    if FAIL in states:
+        return FAIL
+    if WARN in states or UNKNOWN in states:
+        return WARN
+    return OK
+
+
+def _result_history_broken(reason):
+    return _result("Status history", WARN, "Could not record this run", reason,
+                   "The checks themselves ran fine; only the timeline is affected. Check that "
+                   "%s is writable and that the volume is not full." % HISTORY_PATH)
+
 
 def run_all(anisette_url=None, server_only=False):
     """Run every check, in parallel apart from the one real dependency.
 
-    server_only drops the checks that need the phone to be home, leaving the four things the
-    server is actually responsible for: anisette, clock agreement, its own mDNS advertisement,
-    and the daemon process. That is the right verdict for a healthcheck; the page always shows
-    everything.
+    server_only narrows the OVERALL VERDICT to what the server is responsible for. Every check
+    still runs and still appears in the result.
 
     These were serial, which made the page as slow as the SUM of its checks. Two of them shell out
     to avahi-browse with a 15s timeout, so when an AppArmor rule started denying avahi's D-Bus
@@ -427,8 +517,6 @@ def run_all(anisette_url=None, server_only=False):
 
     rest = [_clock, check_device, check_phone_advertisement,
             check_advertisement, check_altserver_running]
-    if server_only:
-        rest = [_clock, check_advertisement, check_altserver_running]
 
     results = [None] * len(rest)
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(rest)) as pool:
@@ -442,14 +530,8 @@ def run_all(anisette_url=None, server_only=False):
                                      "This check raised an exception", str(exc))
 
     checks = [anisette] + results
-    states = [c["state"] for c in checks]
-    if FAIL in states:
-        overall = FAIL
-    elif WARN in states or UNKNOWN in states:
-        overall = WARN
-    else:
-        overall = OK
-    return {"overall": overall, "checks": checks, "host": socket.gethostname()}
+    return {"overall": verdict(checks, server_only), "checks": checks,
+            "host": socket.gethostname()}
 
 
 if __name__ == "__main__":
@@ -463,10 +545,25 @@ if __name__ == "__main__":
     # --server-only: judge the SERVER, not whether the phone happens to be home. See
     # DEVICE_DEPENDENT above for why a healthcheck wants this and the dashboard does not.
     _server_only = "--server-only" in sys.argv[1:]
-    _result = run_all(server_only=_server_only)
+    # --record appends this run to the history, so the page can answer "when did this start"
+    # rather than only "is it broken now". The healthcheck is the writer: it already runs every
+    # five minutes, which is a better cadence than anything a page load would produce.
+    _record = "--record" in sys.argv[1:]
+    _run = run_all(server_only=_server_only)
+
+    _rec_err = record(_run) if _record else None
+    if _rec_err:
+        # Loud, and it DEGRADES the verdict. A history that quietly stopped recording looks
+        # identical to a server that has been fine all along -- which is the exact shape of
+        # every bug this file has been fixed for. Never worse than the checks themselves said,
+        # so a recording problem cannot mask a real failure.
+        sys.stderr.write("status_checks: could not record history (%s)\n" % _rec_err)
+        _run["checks"].append(_result_history_broken(_rec_err))
+        _run["overall"] = verdict(_run["checks"], _server_only)
+
     if _quiet:
-        _bad = [c["name"] for c in _result["checks"] if c["state"] in (FAIL, WARN, UNKNOWN)]
-        print("%s%s" % (_result["overall"], (": " + ", ".join(_bad)) if _bad else ""))
+        _bad = [c["name"] for c in _run["checks"] if c["state"] in (FAIL, WARN, UNKNOWN)]
+        print("%s%s" % (_run["overall"], (": " + ", ".join(_bad)) if _bad else ""))
     else:
-        print(json.dumps(_result, indent=2))
-    sys.exit(exit_code(_result["overall"]))
+        print(json.dumps(_run, indent=2))
+    sys.exit(exit_code(_run["overall"]))
